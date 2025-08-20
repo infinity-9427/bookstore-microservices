@@ -1,0 +1,35 @@
+# VCS / editors
+.git
+.gitignore
+.vscode
+.idea
+
+# Env files
+.env
+.env.*
+
+# Node artifacts
+node_modules/
+dist/
+build/
+coverage/
+.nyc_output/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Tooling caches
+.eslintcache
+.parcel-cache
+.vite
+.next
+.nuxt
+.turbo
+.storybook
+.cypress
+playwright-report/
+
+# TS compiler cache
+*.tsbuildinfo

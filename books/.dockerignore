@@ -1,0 +1,33 @@
+# VCS / editors
+.git
+.gitignore
+.vscode
+.idea
+
+# Env files
+.env
+.env.*
+
+# Python caches / venvs
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+*.dist-info/
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Tests & coverage (exclude from prod image)
+tests/
+.coverage
+.coverage.*
+htmlcov/
+
+# Build outputs
+build/
+dist/
+wheels/

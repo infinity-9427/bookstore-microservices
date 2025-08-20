@@ -1,0 +1,26 @@
+# VCS / editors
+.git
+.gitignore
+.vscode
+.idea
+
+# Env files
+.env
+.env.*
+
+# Go build artifacts
+bin/
+tmp/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+*.prof
+coverage.*
+*.coverprofile
+
+# NOTE: keep go.mod / go.sum (do NOT ignore)
+# If you vendor deps, don't ignore vendor/

@@ -25,6 +25,31 @@ class BookRequest(BaseModel):
         return v
 
 
+class BookUpdateRequest(BaseModel):
+    title: Optional[str] = Field(None, min_length=1, description="Book title")
+    author: Optional[str] = Field(None, min_length=1, description="Book author")
+    price: Optional[Decimal] = Field(None, ge=0, description="Book price")
+
+    @field_validator('title', 'author')
+    @classmethod
+    def validate_trimmed_nonblank(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        trimmed = v.strip()
+        if not trimmed:
+            raise ValueError("Field cannot be empty or whitespace only")
+        return trimmed
+
+    @field_validator('price')
+    @classmethod
+    def validate_price_precision(cls, v: Optional[Decimal]) -> Optional[Decimal]:
+        if v is None:
+            return v
+        if v.as_tuple().exponent < -2:
+            raise ValueError("Price cannot have more than 2 decimal places")
+        return v
+
+
 class BookResponse(BaseModel):
     id: int
     title: str

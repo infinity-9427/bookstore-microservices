@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from pydantic import ValidationError
 
-from models import BookRequest, BookResponse
+from models import BookRequest, BookResponse, BookUpdateRequest
 from database import Book
 from db_session import get_db_session, db_manager
 from config import get_config
@@ -163,11 +163,76 @@ async def get_book(book_id: int, db: Session = Depends(get_db_session)):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@app.put("/v1/books/{book_id}", response_model=BookResponse)
+async def update_book(book_id: int, book_data: BookUpdateRequest, db: Session = Depends(get_db_session)):
+    try:
+        stmt = select(Book).where(Book.id == book_id, Book.active == True)
+        result = db.execute(stmt)
+        book = result.scalar_one_or_none()
+        
+        if not book:
+            raise HTTPException(status_code=404, detail="Book not found")
+        
+        # Update only provided fields
+        if book_data.title is not None:
+            book.title = book_data.title.strip()
+        if book_data.author is not None:
+            book.author = book_data.author.strip()
+        if book_data.price is not None:
+            book.price = book_data.price
+        
+        db.commit()
+        db.refresh(book)
+        
+        logger.info("Book updated successfully", book_id=book.id, title=book.title)
+        return BookResponse.model_validate(book)
+        
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error("Database error updating book", book_id=book_id, error=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.delete("/v1/books/{book_id}")
+async def delete_book(book_id: int, db: Session = Depends(get_db_session)):
+    try:
+        stmt = select(Book).where(Book.id == book_id, Book.active == True)
+        result = db.execute(stmt)
+        book = result.scalar_one_or_none()
+        
+        if not book:
+            raise HTTPException(status_code=404, detail="Book not found")
+        
+        # Soft delete - set active to False
+        book.active = False
+        
+        db.commit()
+        
+        logger.info("Book soft deleted successfully", book_id=book.id, title=book.title)
+        return {"message": "Book deleted successfully"}
+        
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error("Database error deleting book", book_id=book_id, error=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 @app.get("/health")
 async def health_check():
-    if db_manager.check_health():
+    try:
+        # Create a new session just for health check to avoid the initialization issue
+        from sqlalchemy import create_engine, text
+        from config import get_config
+        
+        config = get_config()
+        engine = create_engine(config["database_url"], pool_pre_ping=True)
+        
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+            
         return {"status": "healthy", "service": "books"}
-    else:
+    except Exception as e:
+        logger.error("Health check failed", error=str(e))
         raise HTTPException(status_code=503, detail="Database connection failed")
 
 

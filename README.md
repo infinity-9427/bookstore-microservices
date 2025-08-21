@@ -21,7 +21,7 @@ A distributed bookstore application built with microservices architecture.
 ```bash
 # Clone repository
 git clone <https://github.com/infinity-9427/bookstore-microservices-api.git>
-cd bookstore-microservices
+cd bookstore-microservices-api
 
 # Start all services
 docker-compose up -d
@@ -173,10 +173,3 @@ PostgreSQL database with automatic initialization via Docker volumes:
 - User: `books_user` / `books_password`
 - Tables auto-created on first run
 
-## Notes
-
-- All services use structured JSON logging
-- Books service supports partial updates (only send fields you want to change)
-- Soft deletes implemented (records marked inactive, not removed)
-- Request ID tracking across services
-- CORS enabled for frontend integration

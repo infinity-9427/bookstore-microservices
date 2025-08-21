@@ -63,10 +63,14 @@ services:
       - --storage.tsdb.path=/prometheus
       - --storage.tsdb.retention.time=7d
       - --web.enable-lifecycle
+      - --storage.tsdb.wal-compression
+      - --storage.tsdb.max-block-duration=2h
     read_only: true
     user: "65534:65534"
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
+    mem_limit: 512m
+    cpus: "1.0"
     volumes:
       - prom_data:/prometheus
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -77,8 +81,6 @@ services:
         condition: service_healthy
       orders:
         condition: service_started   # orders has no healthcheck; wait for start only
-      otel-collector:
-        condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "wget --spider -q http://localhost:9090/-/ready || exit 1"]
       interval: 30s
@@ -96,12 +98,13 @@ services:
     read_only: true
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
+    mem_limit: 384m
+    cpus: "0.5"
     volumes:
       - grafana_data:/var/lib/grafana
       - ./monitoring/grafana-datasource.yml:/etc/grafana/provisioning/datasources/datasource.yml:ro
-      # Uncomment these after creating the files/folders to auto-provision dashboards
-      # - ./monitoring/grafana-dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
-      # - ./monitoring/dashboards:/var/lib/grafana/dashboards:ro
+      - ./monitoring/grafana-dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - ./monitoring/dashboards:/var/lib/grafana/dashboards:ro
     ports: ["3000:3000"]
     depends_on:
       prometheus:
@@ -113,21 +116,6 @@ services:
       retries: 3
     restart: unless-stopped
 
-  otel-collector:
-    image: otel/opentelemetry-collector:0.105.0
-    profiles: ["monitoring"]
-    read_only: true
-    cap_drop: ["ALL"]
-    security_opt: ["no-new-privileges:true"]
-    command: ["--config=/etc/otel-collector.yaml"]
-    volumes:
-      - ./monitoring/otel-collector.yaml:/etc/otel-collector.yaml:ro
-    ports:
-      - "4317:4317"   # OTLP gRPC
-      - "4318:4318"   # OTLP HTTP
-      - "8889:8889"   # Prometheus exporter
-      - "13133:13133" # healthz
-    restart: unless-stopped
 
 volumes:
   pgdata:

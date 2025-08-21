@@ -18,15 +18,16 @@ from config import get_config
 
 from prometheus_fastapi_instrumentator import Instrumentator
 
-# --- FastAPI app
 app = FastAPI(title="Books API", version="1.0.0")
 
-# --- Prometheus metrics: must be added BEFORE startup
-Instrumentator().instrument(app).expose(
-    app, endpoint="/metrics", include_in_schema=False
+instrumentator = Instrumentator(
+    excluded_handlers=["/health", "/metrics", "/docs", "/openapi.json"],
+    env_var_name="ENABLE_METRICS",
+    inprogress_name="http_requests_inprogress",
+    inprogress_labels=True,
 )
+instrumentator.instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
 
-# --- Structured logger
 class StructuredLogger:
     def __init__(self, service_name: str):
         self.service_name = service_name
@@ -53,16 +54,14 @@ class StructuredLogger:
 
 logger = StructuredLogger("books")
 
-# --- CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],            # tighten in prod
+    allow_origins=["*"],            
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# --- Error handlers
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(_: Request, exc: RequestValidationError):
     return JSONResponse(
@@ -74,7 +73,6 @@ async def validation_exception_handler(_: Request, exc: RequestValidationError):
 async def http_exception_handler(_: Request, exc: HTTPException):
     return JSONResponse(status_code=exc.status_code, content={"error": exc.detail, "details": {}})
 
-# --- Request logging + request id
 @app.middleware("http")
 async def add_request_id(request: Request, call_next):
     request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
@@ -87,7 +85,6 @@ async def add_request_id(request: Request, call_next):
     response.headers["X-Request-ID"] = request_id
     return response
 
-# --- Routes
 @app.post("/v1/books", response_model=BookResponse, status_code=201)
 async def create_book(book_data: BookRequest, db: Session = Depends(get_db_session)):
     try:
@@ -158,7 +155,7 @@ async def delete_book(book_id: int, db: Session = Depends(get_db_session)):
         book.active = False
         db.commit()
         logger.info("Book soft deleted successfully", book_id=book.id, title=book.title)
-        return {"message": "Book deleted successfully"}
+        return {"message": f"Book with ID {book.id} was deleted successfully"}
     except SQLAlchemyError as e:
         db.rollback()
         logger.error("Database error deleting book", book_id=book_id, error=str(e))

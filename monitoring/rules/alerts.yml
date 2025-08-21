@@ -1,69 +1,63 @@
 groups:
-  - name: availability
+  - name: service-availability
     rules:
       - alert: ServiceDown
-        expr: up{job=~"books|orders|otel-collector|prometheus"} == 0
+        expr: up{job=~"books|orders"} == 0
         for: 1m
         labels:
           severity: critical
         annotations:
-          summary: "Service {{ $labels.job }} is down (instance {{ $labels.instance }})"
-          description: "Prometheus can't scrape {{ $labels.job }} on {{ $labels.instance }}."
+          summary: "{{ $labels.job }} service is down"
+          description: "Prometheus cannot scrape {{ $labels.job }} on {{ $labels.instance }} for 1+ minutes"
 
-  - name: fastapi-errors
+  - name: application-health
     rules:
-      # 5xx error rate for Books API
-      - alert: BooksHighErrorRate
+      - alert: High5xxRate
         expr: |
-          sum(rate(http_requests_total{job="books",status=~"5.."}[5m]))
-            /
-          sum(rate(http_requests_total{job="books"}[5m]))
-            > 0.05
+          (
+            sum(rate(http_requests_total{job="books",status=~"5.."}[10m])) +
+            sum(rate(http_requests_total{job="orders",code=~"5.."}[10m]))
+          ) / (
+            sum(rate(http_requests_total{job="books"}[10m])) +
+            sum(rate(http_requests_total{job="orders"}[10m]))
+          ) > 0.1
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "Books API high 5xx rate"
-          description: "5xx ratio > 5% over 5m."
+          summary: "High 5xx error rate detected"
+          description: "Combined 5xx error rate above 10% for 5 minutes"
 
-      # p95 latency > 500ms for Books API
-      - alert: BooksHighLatencyP95
+      - alert: HighLatencyP95
         expr: |
           histogram_quantile(0.95,
-            sum by (le) (rate(http_request_duration_seconds_bucket{job="books"}[5m]))
-          ) > 0.5
+            sum by (job, le) (
+              rate(http_request_duration_seconds_bucket{job=~"books|orders"}[5m])
+            )
+          ) > 1.0
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "Books API high latency (p95)"
-          description: "p95 > 500ms over 5m."
+          summary: "High latency on {{ $labels.job }}"
+          description: "P95 latency above 1s for {{ $labels.job }} service"
 
-  - name: go-api
+      - alert: NoTraffic
+        expr: sum(rate(http_requests_total{job=~"books|orders"}[15m])) < 0.017
+        for: 15m
+        labels:
+          severity: info
+        annotations:
+          summary: "Very low traffic detected"
+          description: "Less than 1 request per minute across all services for 15 minutes"
+
+  - name: monitoring-health
     rules:
-      # 5xx error rate for Orders API (Go)
-      - alert: OrdersHighErrorRate
-        expr: |
-          sum(rate(http_requests_total{job="orders",code=~"5.."}[5m]))
-            /
-          sum(rate(http_requests_total{job="orders"}[5m]))
-            > 0.05
-        for: 5m
+      - alert: PrometheusTargetDown
+        expr: up{job="prometheus"} == 0
+        for: 2m
         labels:
-          severity: warning
+          severity: critical
         annotations:
-          summary: "Orders API high 5xx rate"
-          description: "5xx ratio > 5% over 5m."
-
-      # p95 latency > 500ms for Orders API (Go client exposes *_seconds)
-      - alert: OrdersHighLatencyP95
-        expr: |
-          histogram_quantile(0.95,
-            sum by (le) (rate(http_server_request_duration_seconds_bucket{job="orders"}[5m]))
-          ) > 0.5
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "Orders API high latency (p95)"
-          description: "p95 > 500ms over 5m."
+          summary: "Prometheus self-monitoring failed"
+          description: "Prometheus cannot scrape its own metrics for 2+ minutes"

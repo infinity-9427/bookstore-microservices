@@ -1,9 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -15,11 +15,15 @@ import (
 var (
 	reqCounter = prometheus.NewCounterVec(
 		prometheus.CounterOpts{Name: "http_requests_total", Help: "Total HTTP requests."},
-		[]string{"method", "path", "status"},
+		[]string{"method", "path", "status_class"},
 	)
 	reqDuration = prometheus.NewHistogramVec(
-		prometheus.HistogramOpts{Name: "http_request_duration_seconds", Help: "Request duration."},
-		[]string{"method", "path", "status"},
+		prometheus.HistogramOpts{
+			Name:    "http_request_duration_seconds",
+			Help:    "Request duration in seconds.",
+			Buckets: []float64{0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5},
+		},
+		[]string{"method", "path"},
 	)
 )
 
@@ -33,16 +37,25 @@ func initRegistry() *prometheus.Registry {
 
 func promMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Skip metrics for health/metrics endpoints
+		path := c.Request.URL.Path
+		if path == "/health" || path == "/metrics" {
+			c.Next()
+			return
+		}
+		
 		start := time.Now()
 		c.Next()
-		status := strconv.Itoa(c.Writer.Status())
-		path := c.FullPath()
-		if path == "" {
-			path = c.Request.URL.Path
+		
+		status := c.Writer.Status()
+		statusClass := fmt.Sprintf("%dxx", status/100)
+		routePath := c.FullPath()
+		if routePath == "" {
+			routePath = "unknown"
 		}
-		reqCounter.WithLabelValues(c.Request.Method, path, status).Inc()
-		reqDuration.WithLabelValues(c.Request.Method, path, status).
-			Observe(time.Since(start).Seconds())
+		
+		reqCounter.WithLabelValues(c.Request.Method, routePath, statusClass).Inc()
+		reqDuration.WithLabelValues(c.Request.Method, routePath).Observe(time.Since(start).Seconds())
 	}
 }
 

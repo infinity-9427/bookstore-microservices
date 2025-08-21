@@ -29,24 +29,24 @@ EXECUTE FUNCTION set_updated_at();
 
 -- OPTIONAL: enforce immutability of core fields (title/author/price)
 -- Comment this block out if you want to allow edits.
-CREATE OR REPLACE FUNCTION books_immutable_fields()
-RETURNS TRIGGER AS $$
-BEGIN
-  IF NEW.title  IS DISTINCT FROM OLD.title
-     OR NEW.author IS DISTINCT FROM OLD.author
-     OR NEW.price  IS DISTINCT FROM OLD.price
-  THEN
-    RAISE EXCEPTION 'Core book fields are immutable';
-  END IF;
-  RETURN NEW;
-END; $$ LANGUAGE plpgsql;
+-- CREATE OR REPLACE FUNCTION books_immutable_fields()
+-- RETURNS TRIGGER AS $$
+-- BEGIN
+--   IF NEW.title  IS DISTINCT FROM OLD.title
+--      OR NEW.author IS DISTINCT FROM OLD.author
+--      OR NEW.price  IS DISTINCT FROM OLD.price
+--   THEN
+--     RAISE EXCEPTION 'Core book fields are immutable';
+--   END IF;
+--   RETURN NEW;
+-- END; $$ LANGUAGE plpgsql;
 
-DROP TRIGGER IF EXISTS trg_books_immutable ON books;
-CREATE TRIGGER trg_books_immutable
-BEFORE UPDATE ON books
-FOR EACH ROW
-WHEN (OLD.* IS DISTINCT FROM NEW.*)
-EXECUTE FUNCTION books_immutable_fields();
+-- DROP TRIGGER IF EXISTS trg_books_immutable ON books;
+-- CREATE TRIGGER trg_books_immutable
+-- BEFORE UPDATE ON books
+-- FOR EACH ROW
+-- WHEN (OLD.* IS DISTINCT FROM NEW.*)
+-- EXECUTE FUNCTION books_immutable_fields();
 
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_books_title       ON books(title);

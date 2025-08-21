@@ -13,12 +13,10 @@ from pydantic import (
     ConfigDict,
 )
 
-# Trimmed, non-empty string type
 NonEmptyStr = Annotated[str, StringConstraints(min_length=1, strip_whitespace=True)]
 
 
 class BookRequest(BaseModel):
-    # Auto-trim all incoming strings
     model_config = ConfigDict(str_strip_whitespace=True)
 
     title: NonEmptyStr = Field(..., description="Book title")
@@ -71,7 +69,6 @@ class BookUpdateRequest(BaseModel):
 
 
 class BookResponse(BaseModel):
-    # Allow constructing from ORM objects
     model_config = ConfigDict(from_attributes=True)
 
     id: int

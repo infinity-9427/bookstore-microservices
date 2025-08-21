@@ -10,6 +10,7 @@ class Base(DeclarativeBase):
 
 class Book(Base):
     __tablename__ = "books"
+    __mapper_args__ = {"eager_defaults": True}
 
     id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
     title: Mapped[str] = mapped_column(TEXT, nullable=False)

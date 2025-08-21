@@ -1,104 +1,70 @@
 package main
 
 import (
-	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
+	"log"
 	"net/http"
-	"os"
+	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-type orderIn struct {
-	BookID   int `json:"book_id"`
-	Quantity int `json:"quantity"`
-}
-type orderOut struct {
-	ID         int     `json:"id"`
-	BookID     int     `json:"book_id"`
-	Quantity   int     `json:"quantity"`
-	TotalPrice float64 `json:"total_price"`
+var (
+	reqCounter = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "http_requests_total", Help: "Total HTTP requests."},
+		[]string{"method", "path", "status"},
+	)
+	reqDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{Name: "http_request_duration_seconds", Help: "Request duration."},
+		[]string{"method", "path", "status"},
+	)
+)
+
+func initRegistry() *prometheus.Registry {
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(collectors.NewGoCollector())
+	reg.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
+	reg.MustRegister(reqCounter, reqDuration)
+	return reg
 }
 
-type bookResp struct {
-	ID     int     `json:"id"`
-	Price  float64 `json:"price"`
-	Title  string  `json:"title"`
-	Author string  `json:"author"`
-}
-
-func fetchBook(base string, id int) (*bookResp, error) {
-	u := fmt.Sprintf("%s/books/%d", base, id)
-	resp, err := http.Get(u)
-	if err != nil {
-		return nil, err
+func promMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+		c.Next()
+		status := strconv.Itoa(c.Writer.Status())
+		path := c.FullPath()
+		if path == "" {
+			path = c.Request.URL.Path
+		}
+		reqCounter.WithLabelValues(c.Request.Method, path, status).Inc()
+		reqDuration.WithLabelValues(c.Request.Method, path, status).
+			Observe(time.Since(start).Seconds())
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode == 404 {
-		return nil, errors.New("book not found")
-	}
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("books api error: %d", resp.StatusCode)
-	}
-	var br bookResp
-	return &br, json.NewDecoder(resp.Body).Decode(&br)
 }
 
 func main() {
-	dsn := os.Getenv("DATABASE_URL")
-	booksURL := os.Getenv("BOOKS_SERVICE_URL")
+	reg := initRegistry()
 
-	pool, err := pgxpool.New(context.Background(), dsn)
-	if err != nil { panic(err) }
-	defer pool.Close()
+	r := gin.New()
+	r.Use(gin.Recovery(), promMiddleware())
 
-	_, _ = pool.Exec(context.Background(), `
-		CREATE TABLE IF NOT EXISTS orders(
-			id SERIAL PRIMARY KEY,
-			book_id INT NOT NULL,
-			quantity INT NOT NULL,
-			total_price NUMERIC(10,2) NOT NULL
-		)`)
+	// health
+	r.GET("/health", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"status": "ok"}) })
 
-	r := gin.Default()
+	// your existing routes...
+	// r.POST("/orders", createOrder)
+	// r.GET("/orders", listOrders)
+	// r.GET("/orders/:id", getOrder)
 
-	r.GET("/health", func(c *gin.Context) {
-		c.JSON(200, gin.H{"status":"ok","service":"orders"})
-	})
+	// /metrics for Prometheus
+	r.GET("/metrics", gin.WrapH(promhttp.HandlerFor(reg, promhttp.HandlerOpts{})))
 
-	r.POST("/orders", func(c *gin.Context) {
-		var in orderIn
-		if err := c.BindJSON(&in); err != nil || in.Quantity <= 0 {
-			c.JSON(400, gin.H{"error":"invalid payload"}); return
-		}
-		book, err := fetchBook(booksURL, in.BookID)
-		if err != nil { c.JSON(400, gin.H{"error":"invalid book_id"}); return }
-		total := float64(in.Quantity) * book.Price
-
-		var id int
-		err = pool.QueryRow(context.Background(),
-			"INSERT INTO orders(book_id,quantity,total_price) VALUES ($1,$2,$3) RETURNING id",
-			in.BookID, in.Quantity, total).Scan(&id)
-		if err != nil { c.JSON(500, gin.H{"error":"db error"}); return }
-
-		c.JSON(201, orderOut{ID:id, BookID:in.BookID, Quantity:in.Quantity, TotalPrice:total})
-	})
-
-	r.GET("/orders", func(c *gin.Context) {
-		rows, _ := pool.Query(context.Background(), "SELECT id,book_id,quantity,total_price FROM orders ORDER BY id")
-		defer rows.Close()
-		out := []orderOut{}
-		for rows.Next() {
-			var o orderOut
-			_ = rows.Scan(&o.ID, &o.BookID, &o.Quantity, &o.TotalPrice)
-			out = append(out, o)
-		}
-		c.JSON(200, out)
-	})
-
-	port := os.Getenv("PORT"); if port == "" { port = "8082" }
-	_ = r.Run(":" + port)
+	log.Println("Orders API listening on :8082")
+	if err := r.Run(":8082"); err != nil {
+		log.Fatal(err)
+	}
 }

@@ -1,0 +1,84 @@
+groups:
+- name: uptime
+  rules:
+  - alert: BooksDown
+    expr: up{job="books"} == 0
+    for: 1m
+    labels: {severity: critical, service: books}
+    annotations:
+      summary: "Books API is down"
+      description: "Prometheus cannot scrape /metrics on books for 1m."
+
+  - alert: OrdersDown
+    expr: up{job="orders"} == 0
+    for: 1m
+    labels: {severity: critical, service: orders}
+    annotations:
+      summary: "Orders API is down"
+      description: "Prometheus cannot scrape /metrics on orders for 1m."
+
+- name: errors-latency
+  rules:
+  # 5xx ratio > 5% over 10m for books+orders
+  # - FastAPI: label 'status'
+  # - Go promhttp: label 'code'
+  - alert: High5xxRate
+    expr: |
+      (
+        /* numerator: 5xx */
+        sum(rate(http_requests_total{job="books",status=~"5.."}[10m])) +
+        sum(rate(http_requests_total{job="orders",code=~"5.."}[10m]))
+      )
+      /
+      (
+        /* denominator: all */
+        sum(rate(http_requests_total{job="books"}[10m])) +
+        sum(rate(http_requests_total{job="orders"}[10m]))
+      ) > 0.05
+    for: 10m
+    labels: {severity: warning}
+    annotations:
+      summary: "High 5xx rate"
+      description: "5xx > 5% over 10m for books/orders."
+
+  # p95 latency > 500ms over 10m
+  # Accept either bucket metric name (Python/Go variants)
+  - alert: HighLatencyP95
+    expr: |
+      histogram_quantile(
+        0.95,
+        sum by (le, job) (
+          rate({__name__=~"http_request_duration_seconds_bucket|http_server_request_duration_seconds_bucket",job=~"books|orders"}[5m])
+        )
+      ) > 0.5
+    for: 10m
+    labels: {severity: warning}
+    annotations:
+      summary: "High p95 latency"
+      description: "p95 > 500ms over 10m for books/orders."
+
+  # Fallback if only _sum/_count exist (average latency > 500ms over 10m)
+  - alert: HighAvgLatency
+    expr: |
+      (
+        sum(rate({__name__=~"http_request_duration_seconds_sum|http_server_request_duration_seconds_sum",job=~"books|orders"}[5m]))
+      )
+      /
+      (
+        sum(rate({__name__=~"http_request_duration_seconds_count|http_server_request_duration_seconds_count",job=~"books|orders"}[5m]))
+      ) > 0.5
+    for: 10m
+    labels: {severity: info}
+    annotations:
+      summary: "High average latency"
+      description: "Average > 500ms over 10m for books/orders."
+
+- name: traffic
+  rules:
+  - alert: NoTraffic
+    expr: sum(rate(http_requests_total{job=~"books|orders"}[15m])) == 0
+    for: 15m
+    labels: {severity: info}
+    annotations:
+      summary: "No traffic seen"
+      description: "No requests for 15m; check router/client or service health."

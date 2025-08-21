@@ -1,0 +1,69 @@
+groups:
+  - name: availability
+    rules:
+      - alert: ServiceDown
+        expr: up{job=~"books|orders|otel-collector|prometheus"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service {{ $labels.job }} is down (instance {{ $labels.instance }})"
+          description: "Prometheus can't scrape {{ $labels.job }} on {{ $labels.instance }}."
+
+  - name: fastapi-errors
+    rules:
+      # 5xx error rate for Books API
+      - alert: BooksHighErrorRate
+        expr: |
+          sum(rate(http_requests_total{job="books",status=~"5.."}[5m]))
+            /
+          sum(rate(http_requests_total{job="books"}[5m]))
+            > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Books API high 5xx rate"
+          description: "5xx ratio > 5% over 5m."
+
+      # p95 latency > 500ms for Books API
+      - alert: BooksHighLatencyP95
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(http_request_duration_seconds_bucket{job="books"}[5m]))
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Books API high latency (p95)"
+          description: "p95 > 500ms over 5m."
+
+  - name: go-api
+    rules:
+      # 5xx error rate for Orders API (Go)
+      - alert: OrdersHighErrorRate
+        expr: |
+          sum(rate(http_requests_total{job="orders",code=~"5.."}[5m]))
+            /
+          sum(rate(http_requests_total{job="orders"}[5m]))
+            > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Orders API high 5xx rate"
+          description: "5xx ratio > 5% over 5m."
+
+      # p95 latency > 500ms for Orders API (Go client exposes *_seconds)
+      - alert: OrdersHighLatencyP95
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(http_server_request_duration_seconds_bucket{job="orders"}[5m]))
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Orders API high latency (p95)"
+          description: "p95 > 500ms over 5m."

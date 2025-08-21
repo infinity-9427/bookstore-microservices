@@ -1,24 +1,135 @@
 services:
+  # --- App DB ---
   db:
     image: postgres:16-alpine
     environment:
       POSTGRES_PASSWORD: postgres
-    ports: ["5432:5432"]
+    ports:
+      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./docker/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -h 127.0.0.1 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
 
+  # --- Books API (FastAPI) ---
   books:
     build: ./books
     env_file: [./books/.env]
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001"]
     ports: ["8001:8001"]
-    depends_on: [db]
+    depends_on:
+      db:
+        condition: service_healthy
+    # Use Python (available in image) for healthcheck; Alpine image doesn't have wget/curl by default
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >
+          python -c "import urllib.request,sys;
+          sys.exit(0) if urllib.request.urlopen('http://localhost:8001/health', timeout=2).status==200 else sys.exit(1)"
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 15s
+    restart: unless-stopped
 
+  # --- Orders API (Go, distroless final image) ---
   orders:
     build: ./orders
     env_file: [./orders/.env]
     ports: ["8082:8082"]
-    depends_on: [db, books]
+    depends_on:
+      db:
+        condition: service_healthy
+      books:
+        condition: service_healthy
+    # Distroless image has no shell/wget; omit container-internal healthcheck.
+    restart: unless-stopped
+
+  # =========================
+  # Monitoring (opt-in)
+  # Start with: docker compose --profile monitoring up -d
+  # =========================
+  prometheus:
+    image: prom/prometheus:v2.53.5
+    profiles: ["monitoring"]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+      - --web.enable-lifecycle
+    read_only: true
+    user: "65534:65534"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - prom_data:/prometheus
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/rules:/etc/prometheus/rules:ro
+    ports: ["9090:9090"]
+    depends_on:
+      books:
+        condition: service_healthy
+      orders:
+        condition: service_started   # orders has no healthcheck; wait for start only
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:9090/-/ready || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    profiles: ["monitoring"]
+    user: "472:472"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana-datasource.yml:/etc/grafana/provisioning/datasources/datasource.yml:ro
+      # Uncomment these after creating the files/folders to auto-provision dashboards
+      # - ./monitoring/grafana-dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      # - ./monitoring/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["3000:3000"]
+    depends_on:
+      prometheus:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  otel-collector:
+    image: otel/opentelemetry-collector:0.105.0
+    profiles: ["monitoring"]
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    command: ["--config=/etc/otel-collector.yaml"]
+    volumes:
+      - ./monitoring/otel-collector.yaml:/etc/otel-collector.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "8889:8889"   # Prometheus exporter
+      - "13133:13133" # healthz
+    restart: unless-stopped
 
 volumes:
   pgdata:
+  prom_data:
+  grafana_data:

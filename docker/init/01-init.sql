@@ -1,7 +1,9 @@
-CREATE USER books_user  WITH PASSWORD 'books_pass';
-CREATE DATABASE books_db  OWNER books_user;
-GRANT ALL PRIVILEGES ON DATABASE books_db  TO books_user;
+-- Create service databases owned by the default 'postgres' superuser
+-- (the docker image runs these once on first init of the data volume)
 
-CREATE USER orders_user WITH PASSWORD 'orders_pass';
-CREATE DATABASE orders_db OWNER orders_user;
-GRANT ALL PRIVILEGES ON DATABASE orders_db TO orders_user;
+CREATE DATABASE books_db;
+CREATE DATABASE orders_db;
+
+-- Optional: set a default timezone per DB (uncomment if you want)
+-- ALTER DATABASE books_db  SET timezone TO 'UTC';
+-- ALTER DATABASE orders_db SET timezone TO 'UTC';

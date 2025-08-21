@@ -84,3 +84,4 @@ htmlcov/
 **/*.prof
 **/bin/
 **/tmp/
+implementation-plan.md

@@ -20,7 +20,7 @@ A distributed bookstore application built with microservices architecture.
 
 ```bash
 # Clone repository
-git clone <repository-url>
+git clone <https://github.com/infinity-9427/bookstore-microservices-api.git>
 cd bookstore-microservices
 
 # Start all services
@@ -32,18 +32,28 @@ docker-compose ps
 
 ## Environment Variables
 
+Before running the services, you need to create `.env` files for each microservice. Example files are provided as `.env.example` in each service directory.
+
 ### Books Service
-Create `books/.env`:
-```env
-BOOKS_DB_DSN=postgresql://books_user:books_password@db:5432/books_db
-PORT=8001
+Copy and configure `books/.env.example` to `books/.env`:
+```bash
+cp books/.env.example books/.env
 ```
 
+Required variables:
+- `BOOKS_DB_DSN`: PostgreSQL connection string for books database
+- `PORT`: Port number for the books service (default: 8001)
+
 ### Orders Service  
-Create `orders/.env`:
-```env
-# Add orders environment variables as needed
+Copy and configure `orders/.env.example` to `orders/.env`:
+```bash
+cp orders/.env.example orders/.env
 ```
+
+Required variables:
+- `DATABASE_URL`: PostgreSQL connection string for orders database
+- `BOOKS_SERVICE_URL`: URL of the books service for inter-service communication
+- `PORT`: Port number for the orders service (default: 8082)
 
 ## Local Development
 

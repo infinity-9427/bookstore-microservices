@@ -1,55 +1,41 @@
 groups:
-  - name: service-availability
+  - name: orders-service
     rules:
-      - alert: ServiceDown
-        expr: up{job=~"books|orders"} == 0
+      - alert: OrdersServiceDown
+        expr: up{job="orders"} == 0
         for: 1m
         labels:
           severity: critical
         annotations:
-          summary: "{{ $labels.job }} service is down"
-          description: "Prometheus cannot scrape {{ $labels.job }} on {{ $labels.instance }} for 1+ minutes"
+          summary: "Orders service is down"
+          description: "Prometheus cannot scrape orders service on {{ $labels.instance }} for 1+ minutes"
 
-  - name: application-health
-    rules:
-      - alert: High5xxRate
+      - alert: OrdersHigh5xxRate
         expr: |
           (
-            sum(rate(http_requests_total{job="books",status=~"5.."}[10m])) +
-            sum(rate(http_requests_total{job="orders",code=~"5.."}[10m]))
-          ) / (
-            sum(rate(http_requests_total{job="books"}[10m])) +
-            sum(rate(http_requests_total{job="orders"}[10m]))
-          ) > 0.1
+            sum(rate(http_requests_total{job="orders",status_class="5xx"}[5m])) /
+            sum(rate(http_requests_total{job="orders"}[5m]))
+          ) * 100 > 10
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "High 5xx error rate detected"
-          description: "Combined 5xx error rate above 10% for 5 minutes"
+          summary: "High 5xx error rate on orders service"
+          description: "Orders service 5xx error rate above 10% for 5 minutes"
 
-      - alert: HighLatencyP95
+      - alert: OrdersHighLatencyP95
         expr: |
-          histogram_quantile(0.95,
-            sum by (job, le) (
-              rate(http_request_duration_seconds_bucket{job=~"books|orders"}[5m])
+          histogram_quantile(0.95, 
+            sum by (le) (
+              rate(http_request_duration_seconds_bucket{job="orders"}[5m])
             )
           ) > 1.0
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "High latency on {{ $labels.job }}"
-          description: "P95 latency above 1s for {{ $labels.job }} service"
-
-      - alert: NoTraffic
-        expr: sum(rate(http_requests_total{job=~"books|orders"}[15m])) < 0.017
-        for: 15m
-        labels:
-          severity: info
-        annotations:
-          summary: "Very low traffic detected"
-          description: "Less than 1 request per minute across all services for 15 minutes"
+          summary: "High latency on orders service"
+          description: "Orders service P95 latency above 1s for 5 minutes"
 
   - name: monitoring-health
     rules:

@@ -11,7 +11,7 @@ COPY . .
 RUN go mod tidy
 
 # build static binary
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /app ./cmd/api
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w -buildid=" -tags netgo -o /app ./cmd/api
 
 # --- runtime stage ---
 FROM gcr.io/distroless/base-debian12

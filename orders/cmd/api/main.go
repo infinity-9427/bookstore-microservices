@@ -121,7 +121,8 @@ func main() {
 	
 	v1 := r.Group("/v1")
 	{
-		v1.POST("/orders", ordersHandler.CreateOrder)
+		v1.POST("/orders", ordersHandler.CreateOrder)           // Supports both legacy and new formats
+		v1.POST("/orders/multi", ordersHandler.CreateMultiItemOrder) // Explicit multi-item format
 		v1.GET("/orders", ordersHandler.ListOrders)
 		v1.GET("/orders/:id", ordersHandler.GetOrder)
 	}

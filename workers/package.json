@@ -7,7 +7,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "node dist/worker.js",
-    "dev": "tsx watch src/worker.ts"
+    "dev": "tsx watch src/worker.ts",
+    "test-producer": "tsx src/test-producer.ts",
+    "test-jobs": "tsx src/test-producer.ts"
   },
   "keywords": [],
   "author": "",
@@ -16,5 +18,10 @@
   "dependencies": {
     "bullmq": "^5.58.0",
     "ioredis": "^5.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "tsx": "^4.20.4",
+    "typescript": "^5.9.2"
   }
 }

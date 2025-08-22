@@ -27,6 +27,39 @@ func NewOrdersHandler(service service.OrdersService, logger *slog.Logger) *Order
 func (h *OrdersHandler) CreateOrder(c *gin.Context) {
 	ctx := c.Request.Context()
 	
+	// Try to parse as new multi-item order format first
+	var req models.CreateOrderRequest
+	if err := c.ShouldBindJSON(&req); err == nil && len(req.Items) > 0 {
+		// New multi-item order format
+		order, err := h.service.CreateOrder(ctx, &req)
+		if err != nil {
+			h.handleServiceError(c, err)
+			return
+		}
+		c.JSON(http.StatusCreated, order)
+		return
+	}
+	
+	// Fall back to legacy single-item format for backward compatibility
+	var legacyReq models.CreateLegacyOrderRequest
+	if err := c.ShouldBindJSON(&legacyReq); err != nil {
+		h.respondWithError(c, http.StatusUnprocessableEntity, "Invalid request body", "Request must be either new multi-item format with 'items' array or legacy format with 'book_id' and 'quantity'")
+		return
+	}
+	
+	order, err := h.service.CreateLegacyOrder(ctx, &legacyReq)
+	if err != nil {
+		h.handleServiceError(c, err)
+		return
+	}
+	
+	c.JSON(http.StatusCreated, order)
+}
+
+// CreateMultiItemOrder handles the new multi-item order format explicitly
+func (h *OrdersHandler) CreateMultiItemOrder(c *gin.Context) {
+	ctx := c.Request.Context()
+	
 	var req models.CreateOrderRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		h.respondWithError(c, http.StatusUnprocessableEntity, "Invalid request body", err.Error())

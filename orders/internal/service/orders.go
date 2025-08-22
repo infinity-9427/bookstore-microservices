@@ -13,6 +13,7 @@ import (
 
 type OrdersService interface {
 	CreateOrder(ctx context.Context, req *models.CreateOrderRequest) (*models.Order, error)
+	CreateLegacyOrder(ctx context.Context, req *models.CreateLegacyOrderRequest) (*models.Order, error)
 	GetOrderByID(ctx context.Context, id int64) (*models.Order, error)
 	ListOrders(ctx context.Context, query *models.ListOrdersQuery) ([]*models.Order, error)
 }
@@ -38,10 +39,10 @@ func NewOrdersService(
 func (s *ordersService) CreateOrder(ctx context.Context, req *models.CreateOrderRequest) (*models.Order, error) {
 	requestID := getRequestID(ctx)
 	
-	s.logger.InfoContext(ctx, "Creating order", 
+	s.logger.InfoContext(ctx, "Creating multi-item order", 
 		slog.String("request_id", requestID),
-		slog.Int64("book_id", req.BookID),
-		slog.Int("quantity", req.Quantity),
+		slog.Int("item_count", len(req.Items)),
+		slog.String("customer_id", stringOrEmpty(req.CustomerID)),
 	)
 	
 	if err := req.Validate(); err != nil {
@@ -52,44 +53,61 @@ func (s *ordersService) CreateOrder(ctx context.Context, req *models.CreateOrder
 		return nil, &ValidationError{Message: err.Error()}
 	}
 	
-	book, err := s.booksClient.GetBook(ctx, req.BookID)
-	if err != nil {
-		s.logger.ErrorContext(ctx, "Failed to get book from books service", 
-			slog.String("request_id", requestID),
-			slog.Int64("book_id", req.BookID),
-			slog.String("error", err.Error()),
-		)
+	// Get all books in parallel to validate availability and get current prices
+	books := make(map[int64]*models.Book)
+	for _, item := range req.Items {
+		book, err := s.booksClient.GetBook(ctx, item.BookID)
+		if err != nil {
+			s.logger.ErrorContext(ctx, "Failed to get book from books service", 
+				slog.String("request_id", requestID),
+				slog.Int64("book_id", item.BookID),
+				slog.String("error", err.Error()),
+			)
+			
+			switch err.(type) {
+			case *clients.BookNotFoundError:
+				return nil, &BookNotFoundError{BookID: item.BookID}
+			case *clients.BookNotActiveError:
+				return nil, &BookNotActiveError{BookID: item.BookID}
+			default:
+				return nil, &ServiceUnavailableError{Message: "Books service is currently unavailable"}
+			}
+		}
+		books[item.BookID] = book
+	}
+	
+	// Create order items with book snapshots
+	orderItems := make([]models.OrderItem, len(req.Items))
+	for i, item := range req.Items {
+		book := books[item.BookID]
 		
-		switch err.(type) {
-		case *clients.BookNotFoundError:
-			return nil, &BookNotFoundError{BookID: req.BookID}
-		case *clients.BookNotActiveError:
-			return nil, &BookNotActiveError{BookID: req.BookID}
-		default:
-			return nil, &ServiceUnavailableError{Message: "Books service is currently unavailable"}
+		unitPrice, err := strconv.ParseFloat(book.Price, 64)
+		if err != nil {
+			s.logger.ErrorContext(ctx, "Invalid book price format", 
+				slog.String("request_id", requestID),
+				slog.Int64("book_id", item.BookID),
+				slog.String("price", book.Price),
+				slog.String("error", err.Error()),
+			)
+			return nil, &InternalError{Message: fmt.Sprintf("Invalid price format for book %d", item.BookID)}
+		}
+		
+		orderItems[i] = models.OrderItem{
+			BookID:     book.ID,
+			BookTitle:  book.Title,
+			BookAuthor: book.Author,
+			Quantity:   item.Quantity,
+			UnitPrice:  unitPrice,
 		}
 	}
 	
-	unitPrice, err := strconv.ParseFloat(book.Price, 64)
-	if err != nil {
-		s.logger.ErrorContext(ctx, "Invalid book price format", 
-			slog.String("request_id", requestID),
-			slog.Int64("book_id", req.BookID),
-			slog.String("price", book.Price),
-			slog.String("error", err.Error()),
-		)
-		return nil, &InternalError{Message: "Invalid book price format"}
-	}
-
 	order := &models.Order{
-		BookID:     book.ID,
-		BookTitle:  book.Title,
-		BookAuthor: book.Author,
-		Quantity:   req.Quantity,
-		UnitPrice:  unitPrice,
+		CustomerID: req.CustomerID,
+		Status:     "pending",
+		Items:      orderItems,
 	}
 	
-	if err := s.repo.CreateOrder(ctx, order); err != nil {
+	if err := s.repo.CreateOrderWithItems(ctx, order, orderItems); err != nil {
 		s.logger.ErrorContext(ctx, "Failed to create order in database", 
 			slog.String("request_id", requestID),
 			slog.String("error", err.Error()),
@@ -100,10 +118,34 @@ func (s *ordersService) CreateOrder(ctx context.Context, req *models.CreateOrder
 	s.logger.InfoContext(ctx, "Order created successfully", 
 		slog.String("request_id", requestID),
 		slog.Int64("order_id", order.ID),
-		slog.Float64("total_price", order.TotalPrice),
+		slog.Float64("total_amount", order.TotalAmount),
+		slog.Int("item_count", len(order.Items)),
 	)
 	
 	return order, nil
+}
+
+// CreateLegacyOrder supports the old single-book API for backward compatibility
+func (s *ordersService) CreateLegacyOrder(ctx context.Context, req *models.CreateLegacyOrderRequest) (*models.Order, error) {
+	requestID := getRequestID(ctx)
+	
+	s.logger.InfoContext(ctx, "Creating legacy single-item order", 
+		slog.String("request_id", requestID),
+		slog.Int64("book_id", req.BookID),
+		slog.Int("quantity", req.Quantity),
+	)
+	
+	if err := req.Validate(); err != nil {
+		s.logger.WarnContext(ctx, "Invalid legacy order request", 
+			slog.String("request_id", requestID),
+			slog.String("error", err.Error()),
+		)
+		return nil, &ValidationError{Message: err.Error()}
+	}
+	
+	// Convert to new format and use the main CreateOrder method
+	newReq := req.ToCreateOrderRequest()
+	return s.CreateOrder(ctx, newReq)
 }
 
 func (s *ordersService) GetOrderByID(ctx context.Context, id int64) (*models.Order, error) {
@@ -169,6 +211,13 @@ func getRequestID(ctx context.Context) string {
 		return requestID.(string)
 	}
 	return "unknown"
+}
+
+func stringOrEmpty(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 type ValidationError struct {

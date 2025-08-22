@@ -51,6 +51,31 @@ services:
     # Distroless image has no shell/wget; omit container-internal healthcheck.
     restart: unless-stopped
 
+  # --- Redis (for job queues) ---
+  redis:
+    image: redis:7.4-alpine
+    ports: ["6379:6379"]
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # --- Workers (BullMQ job processing) ---
+  workers:
+    build: ./workers
+    env_file: [./workers/.env]
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      replicas: 2
+
   # =========================
   # Monitoring (opt-in)
   # Start with: docker compose --profile monitoring up -d
@@ -119,5 +144,6 @@ services:
 
 volumes:
   pgdata:
+  redis_data:
   prom_data:
   grafana_data:

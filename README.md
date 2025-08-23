@@ -576,5 +576,3 @@ cd workers && pnpm dev
 ```
 
 ---
-
-This microservices architecture provides a solid foundation for a bookstore system with room for future enhancements and scaling as business requirements evolve.

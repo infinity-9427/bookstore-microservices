@@ -11,11 +11,12 @@ import (
 
 type OrdersRepository interface {
 	CreateOrder(ctx context.Context, order *models.Order) error
-	CreateOrderWithItems(ctx context.Context, order *models.Order, items []models.OrderItem) error
+	CreateOrderWithIdempotency(ctx context.Context, order *models.Order, idempotencyKey string, requestHash string) error
 	GetOrderByID(ctx context.Context, id int64) (*models.Order, error)
-	GetOrderWithItems(ctx context.Context, id int64) (*models.Order, error)
-	ListOrders(ctx context.Context, limit, offset int) ([]*models.Order, error)
-	ListOrdersWithItems(ctx context.Context, limit, offset int) ([]*models.Order, error)
+	GetOrderByIdempotencyKey(ctx context.Context, idempotencyKey string) (*models.Order, error)
+	CheckIdempotencyKey(ctx context.Context, idempotencyKey string, requestHash string) (*models.Order, error)
+	ListOrders(ctx context.Context) ([]*models.Order, error)
+	ListOrdersPaginated(ctx context.Context, limit, offset int) ([]*models.Order, int, error)
 }
 
 type PostgresOrdersRepository struct {
@@ -28,125 +29,158 @@ func NewOrdersRepository(pool *pgxpool.Pool) OrdersRepository {
 	}
 }
 
-// Legacy CreateOrder for backward compatibility (single item orders)
 func (r *PostgresOrdersRepository) CreateOrder(ctx context.Context, order *models.Order) error {
-	// This is now a wrapper around CreateOrderWithItems for compatibility
-	if len(order.Items) == 0 {
-		return fmt.Errorf("order must contain at least one item")
-	}
-	
-	return r.CreateOrderWithItems(ctx, order, order.Items)
+	return r.CreateOrderWithIdempotency(ctx, order, "", "")
 }
 
-// CreateOrderWithItems creates a new order with multiple items in a transaction
-func (r *PostgresOrdersRepository) CreateOrderWithItems(ctx context.Context, order *models.Order, items []models.OrderItem) error {
+func (r *PostgresOrdersRepository) CreateOrderWithIdempotency(ctx context.Context, order *models.Order, idempotencyKey string, requestHash string) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	
+
+	// Handle idempotency if key is provided
+	if idempotencyKey != "" {
+
+		// Check if idempotency key already exists
+		var existingOrderID int64
+		var existingHash string
+		checkQuery := `SELECT order_id, request_hash FROM idempotency_keys WHERE key = $1`
+		err = tx.QueryRow(ctx, checkQuery, idempotencyKey).Scan(&existingOrderID, &existingHash)
+
+		if err == nil {
+			// Key exists - check if request is the same
+			if existingHash != requestHash {
+				return &IdempotencyConflictError{Key: idempotencyKey}
+			}
+			// Same request, fetch the existing order
+			tx.Rollback(ctx) // Clean up transaction
+			existingOrder, fetchErr := r.GetOrderByID(ctx, existingOrderID)
+			if fetchErr != nil {
+				return fmt.Errorf("failed to fetch existing order: %w", fetchErr)
+			}
+			// Copy the existing order data to the provided order struct
+			*order = *existingOrder
+			return nil // Success - order now contains existing order data
+		} else if err != pgx.ErrNoRows {
+			return fmt.Errorf("failed to check idempotency key: %w", err)
+		}
+		// Key doesn't exist, continue with creation
+	}
+
 	// Create the order
-	orderQuery := `
-		INSERT INTO orders (customer_id, status)
-		VALUES ($1, $2)
-		RETURNING id, total_amount, created_at, updated_at
-	`
-	
-	row := tx.QueryRow(ctx, orderQuery, order.CustomerID, "pending")
-	err = row.Scan(&order.ID, &order.TotalAmount, &order.CreatedAt, &order.UpdatedAt)
+	orderQuery := `INSERT INTO orders (total_price) VALUES ($1) RETURNING id, created_at`
+	err = tx.QueryRow(ctx, orderQuery, order.TotalPrice).Scan(&order.ID, &order.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("failed to create order: %w", err)
 	}
-	
+
 	// Create order items
 	itemQuery := `
-		INSERT INTO order_items (order_id, book_id, book_title, book_author, quantity, unit_price)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id, line_total, created_at
+		INSERT INTO order_items (order_id, book_id, book_title, book_author, quantity, unit_price, total_price)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id, created_at
 	`
-	
-	for i := range items {
-		items[i].OrderID = order.ID
-		row := tx.QueryRow(ctx, itemQuery,
-			items[i].OrderID,
-			items[i].BookID,
-			items[i].BookTitle,
-			items[i].BookAuthor,
-			items[i].Quantity,
-			items[i].UnitPrice,
-		)
-		
-		err = row.Scan(&items[i].ID, &items[i].LineTotal, &items[i].CreatedAt)
+
+	for i := range order.Items {
+		order.Items[i].OrderID = order.ID
+		err = tx.QueryRow(ctx, itemQuery,
+			order.ID,
+			order.Items[i].BookID,
+			order.Items[i].BookTitle,
+			order.Items[i].BookAuthor,
+			order.Items[i].Quantity,
+			order.Items[i].UnitPrice,
+			order.Items[i].TotalPrice, // Renamed from LineTotal
+		).Scan(&order.Items[i].ID, &order.Items[i].CreatedAt)
+
 		if err != nil {
 			return fmt.Errorf("failed to create order item: %w", err)
 		}
 	}
-	
-	// Get updated order total (calculated by database triggers)
-	totalQuery := `SELECT total_amount FROM orders WHERE id = $1`
-	err = tx.QueryRow(ctx, totalQuery, order.ID).Scan(&order.TotalAmount)
-	if err != nil {
-		return fmt.Errorf("failed to get order total: %w", err)
+
+	// Store idempotency key if provided
+	if idempotencyKey != "" {
+		idempotencyQuery := `INSERT INTO idempotency_keys (key, order_id, request_hash, created_at) VALUES ($1, $2, $3, NOW())`
+		_, err = tx.Exec(ctx, idempotencyQuery, idempotencyKey, order.ID, requestHash)
+		if err != nil {
+			return fmt.Errorf("failed to store idempotency key: %w", err)
+		}
 	}
-	
-	// Set the items on the order
-	order.Items = items
-	order.Status = "pending"
-	
+
 	return tx.Commit(ctx)
 }
 
-// Legacy GetOrderByID for backward compatibility
-func (r *PostgresOrdersRepository) GetOrderByID(ctx context.Context, id int64) (*models.Order, error) {
-	return r.GetOrderWithItems(ctx, id)
+func (r *PostgresOrdersRepository) GetOrderByIdempotencyKey(ctx context.Context, idempotencyKey string) (*models.Order, error) {
+	// Get order ID from idempotency table
+	var orderID int64
+	idempotencyQuery := `SELECT order_id FROM idempotency_keys WHERE key = $1`
+	err := r.pool.QueryRow(ctx, idempotencyQuery, idempotencyKey).Scan(&orderID)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, &OrderNotFoundError{ID: 0}
+		}
+		return nil, fmt.Errorf("failed to get order by idempotency key: %w", err)
+	}
+
+	// Get the order
+	return r.GetOrderByID(ctx, orderID)
 }
 
-// GetOrderWithItems retrieves an order with all its items
-func (r *PostgresOrdersRepository) GetOrderWithItems(ctx context.Context, id int64) (*models.Order, error) {
-	// Get order information
-	orderQuery := `
-		SELECT id, customer_id, status, total_amount, created_at, updated_at
-		FROM orders
-		WHERE id = $1
-	`
-	
-	row := r.pool.QueryRow(ctx, orderQuery, id)
-	
-	order := &models.Order{}
-	err := row.Scan(
-		&order.ID,
-		&order.CustomerID,
-		&order.Status,
-		&order.TotalAmount,
-		&order.CreatedAt,
-		&order.UpdatedAt,
-	)
-	
+func (r *PostgresOrdersRepository) CheckIdempotencyKey(ctx context.Context, idempotencyKey string, requestHash string) (*models.Order, error) {
+	// Check if idempotency key exists and get the hash
+	var existingOrderID int64
+	var existingHash string
+	checkQuery := `SELECT order_id, request_hash FROM idempotency_keys WHERE key = $1`
+	err := r.pool.QueryRow(ctx, checkQuery, idempotencyKey).Scan(&existingOrderID, &existingHash)
+
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, &OrderNotFoundError{ID: 0} // Key doesn't exist
+		}
+		return nil, fmt.Errorf("failed to check idempotency key: %w", err)
+	}
+
+	// Key exists - check if request is the same
+	if existingHash != requestHash {
+		return nil, &IdempotencyConflictError{Key: idempotencyKey}
+	}
+
+	// Same request, return existing order
+	return r.GetOrderByID(ctx, existingOrderID)
+}
+
+func (r *PostgresOrdersRepository) GetOrderByID(ctx context.Context, id int64) (*models.Order, error) {
+	// Get order
+	orderQuery := `SELECT id, total_price, created_at FROM orders WHERE id = $1`
+
+	var order models.Order
+	err := r.pool.QueryRow(ctx, orderQuery, id).Scan(&order.ID, &order.TotalPrice, &order.CreatedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, &OrderNotFoundError{ID: id}
 		}
 		return nil, fmt.Errorf("failed to get order: %w", err)
 	}
-	
+
 	// Get order items
 	itemsQuery := `
-		SELECT id, order_id, book_id, book_title, book_author, quantity, unit_price, line_total, created_at
+		SELECT id, order_id, book_id, book_title, book_author, quantity, unit_price, total_price, created_at
 		FROM order_items
 		WHERE order_id = $1
 		ORDER BY created_at ASC
 	`
-	
+
 	rows, err := r.pool.Query(ctx, itemsQuery, id)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get order items: %w", err)
 	}
 	defer rows.Close()
-	
+
 	var items []models.OrderItem
 	for rows.Next() {
-		item := models.OrderItem{}
+		var item models.OrderItem
 		err := rows.Scan(
 			&item.ID,
 			&item.OrderID,
@@ -155,7 +189,7 @@ func (r *PostgresOrdersRepository) GetOrderWithItems(ctx context.Context, id int
 			&item.BookAuthor,
 			&item.Quantity,
 			&item.UnitPrice,
-			&item.LineTotal,
+			&item.TotalPrice, // Renamed from LineTotal
 			&item.CreatedAt,
 		)
 		if err != nil {
@@ -163,83 +197,63 @@ func (r *PostgresOrdersRepository) GetOrderWithItems(ctx context.Context, id int
 		}
 		items = append(items, item)
 	}
-	
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("failed to iterate over order items: %w", err)
+
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating order items: %w", err)
 	}
-	
+
 	order.Items = items
-	return order, nil
+	return &order, nil
 }
 
-// Legacy ListOrders for backward compatibility
-func (r *PostgresOrdersRepository) ListOrders(ctx context.Context, limit, offset int) ([]*models.Order, error) {
-	return r.ListOrdersWithItems(ctx, limit, offset)
-}
+func (r *PostgresOrdersRepository) ListOrders(ctx context.Context) ([]*models.Order, error) {
+	// Get all orders
+	ordersQuery := `SELECT id, total_price, created_at FROM orders ORDER BY created_at DESC`
 
-// ListOrdersWithItems retrieves orders with their items
-func (r *PostgresOrdersRepository) ListOrdersWithItems(ctx context.Context, limit, offset int) ([]*models.Order, error) {
-	// Get orders
-	orderQuery := `
-		SELECT id, customer_id, status, total_amount, created_at, updated_at
-		FROM orders
-		ORDER BY created_at DESC
-		LIMIT $1 OFFSET $2
-	`
-	
-	rows, err := r.pool.Query(ctx, orderQuery, limit, offset)
+	rows, err := r.pool.Query(ctx, ordersQuery)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list orders: %w", err)
 	}
 	defer rows.Close()
-	
-	var orders []*models.Order
-	orderIDs := make([]int64, 0)
-	
+
+	var orderMap = make(map[int64]*models.Order)
+	var orderIDs []int64
+
 	for rows.Next() {
-		order := &models.Order{}
-		err := rows.Scan(
-			&order.ID,
-			&order.CustomerID,
-			&order.Status,
-			&order.TotalAmount,
-			&order.CreatedAt,
-			&order.UpdatedAt,
-		)
+		var order models.Order
+		err := rows.Scan(&order.ID, &order.TotalPrice, &order.CreatedAt)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan order: %w", err)
 		}
-		
-		orders = append(orders, order)
+		order.Items = make([]models.OrderItem, 0)
+		orderMap[order.ID] = &order
 		orderIDs = append(orderIDs, order.ID)
 	}
-	
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("failed to iterate over orders: %w", err)
+
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating orders: %w", err)
 	}
-	
+
 	if len(orderIDs) == 0 {
-		return orders, nil
+		return []*models.Order{}, nil
 	}
-	
-	// Get all items for these orders in one query
+
+	// Get all order items for these orders
 	itemsQuery := `
-		SELECT id, order_id, book_id, book_title, book_author, quantity, unit_price, line_total, created_at
+		SELECT id, order_id, book_id, book_title, book_author, quantity, unit_price, total_price, created_at
 		FROM order_items
 		WHERE order_id = ANY($1)
 		ORDER BY order_id, created_at ASC
 	`
-	
+
 	itemRows, err := r.pool.Query(ctx, itemsQuery, orderIDs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get order items: %w", err)
 	}
 	defer itemRows.Close()
-	
-	// Group items by order ID
-	itemsByOrderID := make(map[int64][]models.OrderItem)
+
 	for itemRows.Next() {
-		item := models.OrderItem{}
+		var item models.OrderItem
 		err := itemRows.Scan(
 			&item.ID,
 			&item.OrderID,
@@ -248,34 +262,133 @@ func (r *PostgresOrdersRepository) ListOrdersWithItems(ctx context.Context, limi
 			&item.BookAuthor,
 			&item.Quantity,
 			&item.UnitPrice,
-			&item.LineTotal,
+			&item.TotalPrice, // Renamed from LineTotal
 			&item.CreatedAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan order item: %w", err)
 		}
-		
-		itemsByOrderID[item.OrderID] = append(itemsByOrderID[item.OrderID], item)
-	}
-	
-	if err := itemRows.Err(); err != nil {
-		return nil, fmt.Errorf("failed to iterate over order items: %w", err)
-	}
-	
-	// Assign items to orders
-	for _, order := range orders {
-		if items, exists := itemsByOrderID[order.ID]; exists {
-			order.Items = items
+
+		if order, exists := orderMap[item.OrderID]; exists {
+			order.Items = append(order.Items, item)
 		}
 	}
-	
+
+	if err = itemRows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating order items: %w", err)
+	}
+
+	// Convert map to slice maintaining order
+	orders := make([]*models.Order, 0, len(orderIDs))
+	for _, id := range orderIDs {
+		orders = append(orders, orderMap[id])
+	}
+
 	return orders, nil
 }
 
+func (r *PostgresOrdersRepository) ListOrdersPaginated(ctx context.Context, limit, offset int) ([]*models.Order, int, error) {
+	// First get total count
+	countQuery := `SELECT COUNT(*) FROM orders`
+	var total int
+	err := r.pool.QueryRow(ctx, countQuery).Scan(&total)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to count orders: %w", err)
+	}
+
+	// Get paginated orders
+	ordersQuery := `SELECT id, total_price, created_at FROM orders ORDER BY created_at DESC LIMIT $1 OFFSET $2`
+
+	rows, err := r.pool.Query(ctx, ordersQuery, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to list orders: %w", err)
+	}
+	defer rows.Close()
+
+	var orderMap = make(map[int64]*models.Order)
+	var orderIDs []int64
+
+	for rows.Next() {
+		var order models.Order
+		err := rows.Scan(&order.ID, &order.TotalPrice, &order.CreatedAt)
+		if err != nil {
+			return nil, 0, fmt.Errorf("failed to scan order: %w", err)
+		}
+		order.Items = make([]models.OrderItem, 0)
+		orderMap[order.ID] = &order
+		orderIDs = append(orderIDs, order.ID)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("error iterating orders: %w", err)
+	}
+
+	if len(orderIDs) == 0 {
+		return []*models.Order{}, total, nil
+	}
+
+	// Get all order items for these orders
+	itemsQuery := `
+		SELECT id, order_id, book_id, book_title, book_author, quantity, unit_price, total_price, created_at
+		FROM order_items
+		WHERE order_id = ANY($1)
+		ORDER BY order_id, created_at ASC
+	`
+
+	itemRows, err := r.pool.Query(ctx, itemsQuery, orderIDs)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to get order items: %w", err)
+	}
+	defer itemRows.Close()
+
+	for itemRows.Next() {
+		var item models.OrderItem
+		err := itemRows.Scan(
+			&item.ID,
+			&item.OrderID,
+			&item.BookID,
+			&item.BookTitle,
+			&item.BookAuthor,
+			&item.Quantity,
+			&item.UnitPrice,
+			&item.TotalPrice, // Renamed from LineTotal
+			&item.CreatedAt,
+		)
+		if err != nil {
+			return nil, 0, fmt.Errorf("failed to scan order item: %w", err)
+		}
+
+		if order, exists := orderMap[item.OrderID]; exists {
+			order.Items = append(order.Items, item)
+		}
+	}
+
+	if err = itemRows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("error iterating order items: %w", err)
+	}
+
+	// Convert map to slice maintaining order
+	orders := make([]*models.Order, 0, len(orderIDs))
+	for _, id := range orderIDs {
+		orders = append(orders, orderMap[id])
+	}
+
+	return orders, total, nil
+}
+
+// Repository error types
 type OrderNotFoundError struct {
 	ID int64
 }
 
 func (e *OrderNotFoundError) Error() string {
 	return fmt.Sprintf("order with ID %d not found", e.ID)
+}
+
+type IdempotencyConflictError struct {
+	Key string
+}
+
+func (e *IdempotencyConflictError) Error() string {
+	return fmt.Sprintf("idempotency key '%s' already used with different request body", e.Key)
 }

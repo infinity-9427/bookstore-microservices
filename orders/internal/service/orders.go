@@ -2,224 +2,256 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strconv"
 
+	"github.com/shopspring/decimal"
 	"github.com/yourname/bookstore-microservices/orders/internal/clients"
+	"github.com/yourname/bookstore-microservices/orders/internal/config"
 	"github.com/yourname/bookstore-microservices/orders/internal/models"
 	"github.com/yourname/bookstore-microservices/orders/internal/repository"
 )
 
 type OrdersService interface {
-	CreateOrder(ctx context.Context, req *models.CreateOrderRequest) (*models.Order, error)
-	CreateLegacyOrder(ctx context.Context, req *models.CreateLegacyOrderRequest) (*models.Order, error)
+	CreateOrder(ctx context.Context, req *models.CreateOrderRequest, idempotencyKey string) (*models.Order, error)
 	GetOrderByID(ctx context.Context, id int64) (*models.Order, error)
-	ListOrders(ctx context.Context, query *models.ListOrdersQuery) ([]*models.Order, error)
+	ListOrders(ctx context.Context) ([]*models.Order, error)
+	ListOrdersPaginated(ctx context.Context, pagination *models.PaginationRequest) (*models.PaginatedResponse[*models.Order], error)
 }
 
 type ordersService struct {
 	repo        repository.OrdersRepository
 	booksClient clients.BooksClient
 	logger      *slog.Logger
+	config      *config.Config
 }
 
 func NewOrdersService(
 	repo repository.OrdersRepository,
 	booksClient clients.BooksClient,
 	logger *slog.Logger,
+	config *config.Config,
 ) OrdersService {
 	return &ordersService{
 		repo:        repo,
 		booksClient: booksClient,
 		logger:      logger,
+		config:      config,
 	}
 }
 
-func (s *ordersService) CreateOrder(ctx context.Context, req *models.CreateOrderRequest) (*models.Order, error) {
-	requestID := getRequestID(ctx)
-	
-	s.logger.InfoContext(ctx, "Creating multi-item order", 
-		slog.String("request_id", requestID),
+func (s *ordersService) CreateOrder(ctx context.Context, req *models.CreateOrderRequest, idempotencyKey string) (*models.Order, error) {
+	requestID := ctx.Value("request_id")
+	if requestID == nil {
+		requestID = "unknown"
+	}
+
+	s.logger.InfoContext(ctx, "Creating order",
+		slog.String("request_id", fmt.Sprintf("%v", requestID)),
 		slog.Int("item_count", len(req.Items)),
-		slog.String("customer_id", stringOrEmpty(req.CustomerID)),
-	)
-	
+		slog.String("idempotency_key", idempotencyKey))
+
+	// Normalize the request (sum duplicate book IDs)
 	if err := req.Validate(); err != nil {
-		s.logger.WarnContext(ctx, "Invalid order request", 
-			slog.String("request_id", requestID),
-			slog.String("error", err.Error()),
-		)
 		return nil, &ValidationError{Message: err.Error()}
 	}
-	
-	// Get all books in parallel to validate availability and get current prices
-	books := make(map[int64]*models.Book)
-	for _, item := range req.Items {
-		book, err := s.booksClient.GetBook(ctx, item.BookID)
-		if err != nil {
-			s.logger.ErrorContext(ctx, "Failed to get book from books service", 
-				slog.String("request_id", requestID),
-				slog.Int64("book_id", item.BookID),
-				slog.String("error", err.Error()),
-			)
-			
-			switch err.(type) {
-			case *clients.BookNotFoundError:
-				return nil, &BookNotFoundError{BookID: item.BookID}
-			case *clients.BookNotActiveError:
-				return nil, &BookNotActiveError{BookID: item.BookID}
-			default:
-				return nil, &ServiceUnavailableError{Message: "Books service is currently unavailable"}
-			}
+
+	// Check idempotency first - only if feature is enabled
+	var requestHash string
+	if s.config.IdempotencyEnabled && idempotencyKey != "" {
+		// Create hash of the original request
+		requestData, _ := json.Marshal(req.Items)
+		hash := sha256.Sum256(requestData)
+		requestHash = fmt.Sprintf("%x", hash)
+
+		if existingOrder, err := s.repo.CheckIdempotencyKey(ctx, idempotencyKey, requestHash); err == nil {
+			s.logger.InfoContext(ctx, "Returning existing order for idempotency key",
+				slog.String("request_id", fmt.Sprintf("%v", requestID)),
+				slog.String("idempotency_key", idempotencyKey),
+				slog.Int64("order_id", existingOrder.ID))
+			return existingOrder, nil
+		} else if conflictErr, ok := err.(*repository.IdempotencyConflictError); ok {
+			return nil, &IdempotencyConflictError{Key: conflictErr.Key}
+		} else if _, ok := err.(*repository.OrderNotFoundError); !ok {
+			// Some other error occurred
+			s.logger.ErrorContext(ctx, "Failed to check idempotency",
+				slog.String("request_id", fmt.Sprintf("%v", requestID)),
+				slog.String("error", err.Error()))
+			return nil, &InternalError{Message: "Failed to check idempotency"}
 		}
-		books[item.BookID] = book
+		// Order not found, continue with creation
 	}
-	
-	// Create order items with book snapshots
-	orderItems := make([]models.OrderItem, len(req.Items))
-	for i, item := range req.Items {
-		book := books[item.BookID]
-		
-		unitPrice, err := strconv.ParseFloat(book.Price, 64)
-		if err != nil {
-			s.logger.ErrorContext(ctx, "Invalid book price format", 
-				slog.String("request_id", requestID),
-				slog.Int64("book_id", item.BookID),
-				slog.String("price", book.Price),
-				slog.String("error", err.Error()),
-			)
-			return nil, &InternalError{Message: fmt.Sprintf("Invalid price format for book %d", item.BookID)}
+
+	// Extract unique book IDs
+	bookIDs := make([]int64, 0, len(req.Items))
+	itemsMap := make(map[int64]*models.CreateOrderItemRequest)
+	for _, item := range req.Items {
+		if _, exists := itemsMap[item.BookID]; !exists {
+			bookIDs = append(bookIDs, item.BookID)
+			itemsMap[item.BookID] = &item
 		}
-		
-		orderItems[i] = models.OrderItem{
-			BookID:     book.ID,
+	}
+
+	s.logger.InfoContext(ctx, "Validating books with Books service",
+		slog.String("request_id", fmt.Sprintf("%v", requestID)),
+		slog.Any("book_ids", bookIDs))
+
+	// Validate all books with the Books service (no DB transaction yet)
+	books, err := s.booksClient.GetBooks(ctx, bookIDs)
+	if err != nil {
+		s.logger.ErrorContext(ctx, "Failed to validate books",
+			slog.String("request_id", fmt.Sprintf("%v", requestID)),
+			slog.String("error", err.Error()))
+
+		// Map client errors to service errors
+		switch e := err.(type) {
+		case *clients.BookNotFoundError:
+			return nil, &BookNotFoundError{BookID: e.BookID}
+		case *clients.BookInactiveError:
+			return nil, &BookNotOrderableError{BookID: e.BookID}
+		case *clients.CircuitBreakerError, *clients.ServiceUnavailableError:
+			return nil, &ServiceUnavailableError{Message: e.Error()}
+		default:
+			return nil, &ServiceUnavailableError{Message: "Books service error: " + err.Error()}
+		}
+	}
+
+	// Check if all requested books were found
+	for _, bookID := range bookIDs {
+		if _, found := books[bookID]; !found {
+			return nil, &BookNotFoundError{BookID: bookID}
+		}
+	}
+
+	s.logger.InfoContext(ctx, "All books validated, creating order",
+		slog.String("request_id", fmt.Sprintf("%v", requestID)),
+		slog.Int("books_validated", len(books)))
+
+	// Calculate totals using exact decimal arithmetic - NO FLOATS
+	orderItems := make([]models.OrderItem, 0, len(req.Items))
+	orderTotal := decimal.Zero
+
+	for _, itemReq := range req.Items {
+		book := books[itemReq.BookID]
+
+		// Parse price string directly to decimal - never use floats
+		unitPrice, err := book.GetPriceDecimal()
+		if err != nil {
+			s.logger.ErrorContext(ctx, "Invalid price format",
+				slog.String("request_id", fmt.Sprintf("%v", requestID)),
+				slog.Int64("book_id", book.ID),
+				slog.String("price", book.Price),
+				slog.String("error", err.Error()))
+			return nil, &InternalError{Message: "Invalid book price format"}
+		}
+
+		// Exact decimal multiplication: price × quantity
+		quantity := decimal.NewFromInt(int64(itemReq.Quantity))
+		lineTotal := unitPrice.Mul(quantity).Round(2)
+		orderTotal = orderTotal.Add(lineTotal)
+
+		orderItem := models.OrderItem{
+			BookID:     itemReq.BookID,
 			BookTitle:  book.Title,
 			BookAuthor: book.Author,
-			Quantity:   item.Quantity,
-			UnitPrice:  unitPrice,
+			Quantity:   itemReq.Quantity,
+			UnitPrice:  models.FormatPrice(unitPrice), // Always 2dp string
+			TotalPrice: models.FormatPrice(lineTotal), // Renamed from LineTotal, always 2dp string
+		}
+		orderItems = append(orderItems, orderItem)
+	}
+
+	// Create the order with all calculated values
+	order := &models.Order{
+		Items:      orderItems,
+		TotalPrice: models.FormatPrice(orderTotal), // Renamed from TotalAmount, always 2dp string
+	}
+
+	// Now begin transaction and create order
+	var createErr error
+	if s.config.IdempotencyEnabled {
+		createErr = s.repo.CreateOrderWithIdempotency(ctx, order, idempotencyKey, requestHash)
+	} else {
+		createErr = s.repo.CreateOrder(ctx, order)
+	}
+	if createErr != nil {
+		switch createErr.(type) {
+		case *repository.IdempotencyConflictError:
+			s.logger.WarnContext(ctx, "Idempotency key conflict",
+				slog.String("request_id", fmt.Sprintf("%v", requestID)),
+				slog.String("idempotency_key", idempotencyKey))
+			return nil, &IdempotencyConflictError{Key: idempotencyKey}
+		default:
+			s.logger.ErrorContext(ctx, "Failed to create order",
+				slog.String("request_id", fmt.Sprintf("%v", requestID)),
+				slog.String("error", createErr.Error()))
+			return nil, &InternalError{Message: "Failed to create order"}
 		}
 	}
-	
-	order := &models.Order{
-		CustomerID: req.CustomerID,
-		Status:     "pending",
-		Items:      orderItems,
-	}
-	
-	if err := s.repo.CreateOrderWithItems(ctx, order, orderItems); err != nil {
-		s.logger.ErrorContext(ctx, "Failed to create order in database", 
-			slog.String("request_id", requestID),
-			slog.String("error", err.Error()),
-		)
-		return nil, &InternalError{Message: "Failed to create order"}
-	}
-	
-	s.logger.InfoContext(ctx, "Order created successfully", 
-		slog.String("request_id", requestID),
+
+	s.logger.InfoContext(ctx, "Order created successfully",
+		slog.String("request_id", fmt.Sprintf("%v", requestID)),
 		slog.Int64("order_id", order.ID),
-		slog.Float64("total_amount", order.TotalAmount),
-		slog.Int("item_count", len(order.Items)),
-	)
-	
+		slog.String("total_price", order.TotalPrice), // Updated field name
+		slog.String("idempotency_key", idempotencyKey))
+
 	return order, nil
 }
 
-// CreateLegacyOrder supports the old single-book API for backward compatibility
-func (s *ordersService) CreateLegacyOrder(ctx context.Context, req *models.CreateLegacyOrderRequest) (*models.Order, error) {
-	requestID := getRequestID(ctx)
-	
-	s.logger.InfoContext(ctx, "Creating legacy single-item order", 
-		slog.String("request_id", requestID),
-		slog.Int64("book_id", req.BookID),
-		slog.Int("quantity", req.Quantity),
-	)
-	
-	if err := req.Validate(); err != nil {
-		s.logger.WarnContext(ctx, "Invalid legacy order request", 
-			slog.String("request_id", requestID),
-			slog.String("error", err.Error()),
-		)
-		return nil, &ValidationError{Message: err.Error()}
-	}
-	
-	// Convert to new format and use the main CreateOrder method
-	newReq := req.ToCreateOrderRequest()
-	return s.CreateOrder(ctx, newReq)
-}
-
 func (s *ordersService) GetOrderByID(ctx context.Context, id int64) (*models.Order, error) {
-	requestID := getRequestID(ctx)
-	
-	s.logger.InfoContext(ctx, "Getting order by ID", 
-		slog.String("request_id", requestID),
-		slog.Int64("order_id", id),
-	)
-	
 	order, err := s.repo.GetOrderByID(ctx, id)
 	if err != nil {
 		switch err.(type) {
 		case *repository.OrderNotFoundError:
-			s.logger.WarnContext(ctx, "Order not found", 
-				slog.String("request_id", requestID),
-				slog.Int64("order_id", id),
-			)
 			return nil, &OrderNotFoundError{ID: id}
 		default:
-			s.logger.ErrorContext(ctx, "Failed to get order from database", 
-				slog.String("request_id", requestID),
-				slog.Int64("order_id", id),
-				slog.String("error", err.Error()),
-			)
+			s.logger.ErrorContext(ctx, "Failed to get order", slog.Int64("order_id", id), slog.String("error", err.Error()))
 			return nil, &InternalError{Message: "Failed to get order"}
 		}
 	}
-	
 	return order, nil
 }
 
-func (s *ordersService) ListOrders(ctx context.Context, query *models.ListOrdersQuery) ([]*models.Order, error) {
-	requestID := getRequestID(ctx)
-	
-	query.SetDefaults()
-	
-	s.logger.InfoContext(ctx, "Listing orders", 
-		slog.String("request_id", requestID),
-		slog.Int("limit", query.Limit),
-		slog.Int("offset", query.Offset),
-	)
-	
-	orders, err := s.repo.ListOrders(ctx, query.Limit, query.Offset)
+func (s *ordersService) ListOrders(ctx context.Context) ([]*models.Order, error) {
+	orders, err := s.repo.ListOrders(ctx)
 	if err != nil {
-		s.logger.ErrorContext(ctx, "Failed to list orders from database", 
-			slog.String("request_id", requestID),
-			slog.String("error", err.Error()),
-		)
+		s.logger.ErrorContext(ctx, "Failed to list orders", slog.String("error", err.Error()))
 		return nil, &InternalError{Message: "Failed to list orders"}
 	}
-	
-	s.logger.InfoContext(ctx, "Orders listed successfully", 
-		slog.String("request_id", requestID),
-		slog.Int("count", len(orders)),
-	)
-	
+
+	if orders == nil {
+		orders = make([]*models.Order, 0)
+	}
+
 	return orders, nil
 }
 
-func getRequestID(ctx context.Context) string {
-	if requestID := ctx.Value("request_id"); requestID != nil {
-		return requestID.(string)
+func (s *ordersService) ListOrdersPaginated(ctx context.Context, pagination *models.PaginationRequest) (*models.PaginatedResponse[*models.Order], error) {
+	orders, total, err := s.repo.ListOrdersPaginated(ctx, pagination.Limit, pagination.Offset)
+	if err != nil {
+		s.logger.ErrorContext(ctx, "Failed to list paginated orders", slog.String("error", err.Error()))
+		return nil, &InternalError{Message: "Failed to list orders"}
 	}
-	return "unknown"
+
+	if orders == nil {
+		orders = make([]*models.Order, 0)
+	}
+
+	response := &models.PaginatedResponse[*models.Order]{
+		Data:   orders,
+		Total:  total,
+		Limit:  pagination.Limit,
+		Offset: pagination.Offset,
+	}
+
+	return response, nil
 }
 
-func stringOrEmpty(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
-}
+// Removed formatCentsAsDecimal - now using exact decimal arithmetic with shopspring/decimal
 
+// Service error types
 type ValidationError struct {
 	Message string
 }
@@ -236,12 +268,12 @@ func (e *BookNotFoundError) Error() string {
 	return fmt.Sprintf("book with ID %d not found", e.BookID)
 }
 
-type BookNotActiveError struct {
+type BookNotOrderableError struct {
 	BookID int64
 }
 
-func (e *BookNotActiveError) Error() string {
-	return fmt.Sprintf("book with ID %d is not active", e.BookID)
+func (e *BookNotOrderableError) Error() string {
+	return fmt.Sprintf("book with ID %d is not orderable", e.BookID)
 }
 
 type OrderNotFoundError struct {
@@ -258,6 +290,14 @@ type ServiceUnavailableError struct {
 
 func (e *ServiceUnavailableError) Error() string {
 	return e.Message
+}
+
+type IdempotencyConflictError struct {
+	Key string
+}
+
+func (e *IdempotencyConflictError) Error() string {
+	return fmt.Sprintf("idempotency key '%s' already used with different request body", e.Key)
 }
 
 type InternalError struct {

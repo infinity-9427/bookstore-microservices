@@ -3,16 +3,15 @@ package models
 import (
 	"fmt"
 	"time"
+
+	"github.com/shopspring/decimal"
 )
 
 type Order struct {
-	ID          int64       `json:"id" db:"id"`
-	CustomerID  *string     `json:"customer_id,omitempty" db:"customer_id"`
-	Status      string      `json:"status" db:"status"`
-	TotalAmount float64     `json:"total_amount" db:"total_amount"`
-	Items       []OrderItem `json:"items,omitempty"`
-	CreatedAt   time.Time   `json:"created_at" db:"created_at"`
-	UpdatedAt   time.Time   `json:"updated_at" db:"updated_at"`
+	ID         int64       `json:"id" db:"id"`
+	Items      []OrderItem `json:"items"`
+	TotalPrice string      `json:"total_price" db:"total_price"` // Renamed from total_amount, always 2dp string
+	CreatedAt  time.Time   `json:"created_at" db:"created_at"`
 }
 
 type OrderItem struct {
@@ -22,14 +21,51 @@ type OrderItem struct {
 	BookTitle  string    `json:"book_title" db:"book_title"`
 	BookAuthor string    `json:"book_author" db:"book_author"`
 	Quantity   int       `json:"quantity" db:"quantity"`
-	UnitPrice  float64   `json:"unit_price" db:"unit_price"`
-	LineTotal  float64   `json:"line_total" db:"line_total"`
+	UnitPrice  string    `json:"unit_price" db:"unit_price"`   // Always 2dp string from decimal
+	TotalPrice string    `json:"total_price" db:"total_price"` // Renamed from line_total, always 2dp string
 	CreatedAt  time.Time `json:"created_at" db:"created_at"`
+}
+
+type CreateOrderRequest struct {
+	Items []CreateOrderItemRequest `json:"items" binding:"required,min=1"`
 }
 
 type CreateOrderItemRequest struct {
 	BookID   int64 `json:"book_id" binding:"required"`
 	Quantity int   `json:"quantity" binding:"required"`
+}
+
+func (r *CreateOrderRequest) Validate() error {
+	if len(r.Items) == 0 {
+		return fmt.Errorf("order must contain at least one item")
+	}
+
+	for i, item := range r.Items {
+		if err := item.Validate(); err != nil {
+			return fmt.Errorf("item %d: %w", i+1, err)
+		}
+	}
+
+	// Normalize duplicate book IDs by summing quantities
+	bookItems := make(map[int64]*CreateOrderItemRequest)
+	for _, item := range r.Items {
+		if existing, exists := bookItems[item.BookID]; exists {
+			existing.Quantity += item.Quantity
+		} else {
+			bookItems[item.BookID] = &CreateOrderItemRequest{
+				BookID:   item.BookID,
+				Quantity: item.Quantity,
+			}
+		}
+	}
+
+	// Replace items with normalized list
+	r.Items = make([]CreateOrderItemRequest, 0, len(bookItems))
+	for _, item := range bookItems {
+		r.Items = append(r.Items, *item)
+	}
+
+	return nil
 }
 
 func (r *CreateOrderItemRequest) Validate() error {
@@ -39,98 +75,56 @@ func (r *CreateOrderItemRequest) Validate() error {
 	if r.Quantity <= 0 {
 		return fmt.Errorf("quantity must be greater than 0")
 	}
-	if r.Quantity > 100000 {
-		return fmt.Errorf("quantity cannot exceed 100000")
+	if r.Quantity > 10000 {
+		return fmt.Errorf("quantity cannot exceed 10000")
 	}
 	return nil
-}
-
-type CreateOrderRequest struct {
-	CustomerID *string                   `json:"customer_id,omitempty"`
-	Items      []CreateOrderItemRequest  `json:"items" binding:"required,min=1,dive"`
-}
-
-func (r *CreateOrderRequest) Validate() error {
-	if len(r.Items) == 0 {
-		return fmt.Errorf("order must contain at least one item")
-	}
-	if len(r.Items) > 50 {
-		return fmt.Errorf("order cannot contain more than 50 items")
-	}
-	
-	// Validate each item
-	for i, item := range r.Items {
-		if err := item.Validate(); err != nil {
-			return fmt.Errorf("item %d: %w", i+1, err)
-		}
-	}
-	
-	// Check for duplicate book IDs
-	bookIDs := make(map[int64]bool)
-	for i, item := range r.Items {
-		if bookIDs[item.BookID] {
-			return fmt.Errorf("item %d: duplicate book_id %d", i+1, item.BookID)
-		}
-		bookIDs[item.BookID] = true
-	}
-	
-	return nil
-}
-
-// Legacy single-book order request for backward compatibility
-type CreateLegacyOrderRequest struct {
-	BookID   int64 `json:"book_id" binding:"required"`
-	Quantity int   `json:"quantity" binding:"required"`
-}
-
-func (r *CreateLegacyOrderRequest) Validate() error {
-	if r.BookID <= 0 {
-		return fmt.Errorf("book_id must be greater than 0")
-	}
-	if r.Quantity <= 0 {
-		return fmt.Errorf("quantity must be greater than 0")
-	}
-	if r.Quantity > 100000 {
-		return fmt.Errorf("quantity cannot exceed 100000")
-	}
-	return nil
-}
-
-// Convert legacy request to new format
-func (r *CreateLegacyOrderRequest) ToCreateOrderRequest() *CreateOrderRequest {
-	return &CreateOrderRequest{
-		Items: []CreateOrderItemRequest{
-			{
-				BookID:   r.BookID,
-				Quantity: r.Quantity,
-			},
-		},
-	}
 }
 
 type Book struct {
-	ID     int64   `json:"id"`
-	Title  string  `json:"title"`
-	Author string  `json:"author"`
-	Price  string  `json:"price"`
-	Active bool    `json:"active"`
+	ID          int64  `json:"id"`
+	Title       string `json:"title"`
+	Author      string `json:"author"`
+	Description string `json:"description"`
+	Price       string `json:"price"` // String price from Books API - never use floats
+	Active      bool   `json:"active"`
+}
+
+// GetPriceDecimal returns the price as an exact decimal for precise calculations
+// Never uses float64 - parses string directly to decimal.Decimal
+func (b *Book) GetPriceDecimal() (decimal.Decimal, error) {
+	price, err := decimal.NewFromString(b.Price)
+	if err != nil {
+		return decimal.Zero, fmt.Errorf("invalid price format '%s': %w", b.Price, err)
+	}
+	return price, nil
+}
+
+// FormatPrice formats a decimal price as a 2-decimal-place string
+func FormatPrice(d decimal.Decimal) string {
+	return d.StringFixed(2)
+}
+
+// ParsePrice parses a price string into decimal.Decimal
+func ParsePrice(priceStr string) (decimal.Decimal, error) {
+	return decimal.NewFromString(priceStr)
 }
 
 type ErrorResponse struct {
-	Error   string      `json:"error"`
-	Details interface{} `json:"details,omitempty"`
+	Error   string `json:"error"`
+	Message string `json:"message"`
 }
 
-type ListOrdersQuery struct {
-	Limit  int `form:"limit"`
-	Offset int `form:"offset"`
+// PaginationRequest represents pagination parameters
+type PaginationRequest struct {
+	Limit  int `form:"limit,default=20" binding:"min=1,max=100"`
+	Offset int `form:"offset,default=0" binding:"min=0"`
 }
 
-func (q *ListOrdersQuery) SetDefaults() {
-	if q.Limit <= 0 || q.Limit > 100 {
-		q.Limit = 20
-	}
-	if q.Offset < 0 {
-		q.Offset = 0
-	}
+// PaginatedResponse wraps paginated data with metadata
+type PaginatedResponse[T any] struct {
+	Data   []T `json:"data"`
+	Total  int `json:"total"`
+	Limit  int `json:"limit"`
+	Offset int `json:"offset"`
 }

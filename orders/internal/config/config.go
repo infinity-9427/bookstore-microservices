@@ -15,51 +15,101 @@ type Config struct {
 	DBTimeout        time.Duration
 	HTTPTimeout      time.Duration
 	CircuitThreshold int
+
+	// Feature flags
+	IdempotencyEnabled bool // default: false
+
+	// L1 cache for Books
+	BooksCacheTTL        time.Duration // default: 5s
+	BooksCacheMaxEntries int           // default: 10000
+
+	// Background DB pool (for cleanup jobs)
+	BackgroundDatabaseURL string // default: DatabaseURL
+	BackgroundMaxConns    int    // default: 2
 }
 
 var (
-	config *Config
-	once   sync.Once
+	cfg  *Config
+	once sync.Once
 )
 
 func Load() (*Config, error) {
 	var err error
-	once.Do(func() {
-		config, err = load()
-	})
-	return config, err
+	once.Do(func() { cfg, err = load() })
+	return cfg, err
 }
 
 func load() (*Config, error) {
-	cfg := &Config{
-		DBTimeout:        3 * time.Second,
-		HTTPTimeout:      3 * time.Second,
-		CircuitThreshold: 5,
+	c := &Config{
+		DBTimeout:            3 * time.Second,
+		HTTPTimeout:          3 * time.Second,
+		CircuitThreshold:     5,
+		IdempotencyEnabled:   false, // Default: disabled for backward compatibility
+		BooksCacheTTL:        5 * time.Second,
+		BooksCacheMaxEntries: 10000,
+		BackgroundMaxConns:   2,
 	}
 
-	var err error
-
-	// Required environment variables
-	cfg.DatabaseURL = os.Getenv("DATABASE_URL")
-	if cfg.DatabaseURL == "" {
-		return nil, fmt.Errorf("DATABASE_URL environment variable is required")
-	}
-
-	cfg.BooksServiceURL = os.Getenv("BOOKS_SERVICE_URL")
-	if cfg.BooksServiceURL == "" {
-		return nil, fmt.Errorf("BOOKS_SERVICE_URL environment variable is required")
-	}
-
-	// Optional environment variables with defaults
-	portStr := os.Getenv("PORT")
-	if portStr == "" {
-		cfg.Port = 8082
+	if v := os.Getenv("DATABASE_URL"); v != "" {
+		c.DatabaseURL = v
 	} else {
-		cfg.Port, err = strconv.Atoi(portStr)
-		if err != nil {
-			return nil, fmt.Errorf("invalid PORT value: %v", err)
+		return nil, fmt.Errorf("DATABASE_URL is required")
+	}
+
+	if v := os.Getenv("BOOKS_SERVICE_URL"); v != "" {
+		c.BooksServiceURL = v
+	} else {
+		return nil, fmt.Errorf("BOOKS_SERVICE_URL is required")
+	}
+
+	if v := os.Getenv("PORT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.Port = n
+		}
+	}
+	if v := os.Getenv("DB_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			c.DBTimeout = d
+		}
+	}
+	if v := os.Getenv("HTTP_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			c.HTTPTimeout = d
+		}
+	}
+	if v := os.Getenv("CIRCUIT_THRESHOLD"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.CircuitThreshold = n
 		}
 	}
 
-	return cfg, nil
+	if v := os.Getenv("ORDERS_ENABLE_IDEMPOTENCY"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			c.IdempotencyEnabled = b
+		}
+	}
+
+	if v := os.Getenv("BOOKS_CACHE_TTL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			c.BooksCacheTTL = d
+		}
+	}
+	if v := os.Getenv("BOOKS_CACHE_MAX"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			c.BooksCacheMaxEntries = n
+		}
+	}
+
+	if v := os.Getenv("BACKGROUND_DATABASE_URL"); v != "" {
+		c.BackgroundDatabaseURL = v
+	} else {
+		c.BackgroundDatabaseURL = c.DatabaseURL
+	}
+	if v := os.Getenv("BACKGROUND_MAX_CONNS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			c.BackgroundMaxConns = n
+		}
+	}
+
+	return c, nil
 }

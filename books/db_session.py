@@ -1,8 +1,8 @@
-import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.exc import SQLAlchemyError
 from database import Base
+from config import Config
 
 
 class DatabaseManager:
@@ -12,12 +12,10 @@ class DatabaseManager:
         self._initialize_database()
 
     def _initialize_database(self):
-        database_url = os.getenv("BOOKS_DB_DSN")
-        if not database_url:
-            raise ValueError("BOOKS_DB_DSN environment variable is required")
+        Config.validate_required()
         
         self.engine = create_engine(
-            database_url,
+            Config.BOOKS_DB_DSN,
             pool_pre_ping=True,
             pool_recycle=300
         )

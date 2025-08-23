@@ -1,5 +1,5 @@
 # --- build stage ---
-FROM golang:1.25-alpine AS build
+FROM golang:1.24-alpine AS build
 WORKDIR /src
 
 # deps first (cache-friendly)
@@ -14,8 +14,8 @@ RUN go mod tidy
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w -buildid=" -tags netgo -o /app ./cmd/api
 
 # --- runtime stage ---
-FROM gcr.io/distroless/base-debian12
+FROM gcr.io/distroless/static:nonroot
 COPY --from=build /app /app
-USER 1000:1000
+USER nonroot:nonroot
 EXPOSE 8082
 ENTRYPOINT ["/app"]

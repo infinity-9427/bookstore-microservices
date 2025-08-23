@@ -1,0 +1,390 @@
+package handlers
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"log/slog"
+	"os"
+
+	"github.com/yourname/bookstore-microservices/orders/internal/clients"
+	"github.com/yourname/bookstore-microservices/orders/internal/models"
+	"github.com/yourname/bookstore-microservices/orders/internal/repository"
+	"github.com/yourname/bookstore-microservices/orders/internal/service"
+)
+
+// MockBooksClient for integration tests
+type MockBooksClientIntegration struct {
+	books map[int64]*models.Book
+}
+
+func NewMockBooksClientIntegration() *MockBooksClientIntegration {
+	return &MockBooksClientIntegration{
+		books: map[int64]*models.Book{
+			1: {ID: 1, Title: "Rich Dad, Poor Dad", Author: "Robert Kiyosaki", Price: "19.99", Active: true},
+			2: {ID: 2, Title: "Atomic Habits", Author: "James Clear", Price: "24.99", Active: true},
+			3: {ID: 3, Title: "Inactive Book", Author: "Test Author", Price: "15.99", Active: false},
+		},
+	}
+}
+
+func (m *MockBooksClientIntegration) GetBook(ctx context.Context, bookID int64) (*models.Book, error) {
+	book, exists := m.books[bookID]
+	if !exists {
+		return nil, &clients.BookNotFoundError{BookID: bookID}
+	}
+
+	if !book.Active {
+		return nil, &clients.BookInactiveError{BookID: bookID}
+	}
+
+	return book, nil
+}
+
+func (m *MockBooksClientIntegration) GetBooks(ctx context.Context, bookIDs []int64) (map[int64]*models.Book, error) {
+	result := make(map[int64]*models.Book)
+
+	for _, id := range bookIDs {
+		book, err := m.GetBook(ctx, id)
+		if err != nil {
+			return nil, err // Return first error encountered
+		}
+		result[id] = book
+	}
+
+	return result, nil
+}
+
+func setupTestDB(t *testing.T) *pgxpool.Pool {
+	// This would normally use a test database
+	// For this example, we'll use the existing database
+	// In a real implementation, you'd set up a separate test DB
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		databaseURL = "postgresql://orders_user:orders_password@localhost:5432/orders_db"
+	}
+
+	pool, err := pgxpool.New(context.Background(), databaseURL)
+	require.NoError(t, err)
+
+	return pool
+}
+
+func setupRouter(t *testing.T) (*gin.Engine, *pgxpool.Pool) {
+	gin.SetMode(gin.TestMode)
+
+	pool := setupTestDB(t)
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+
+	// Use mock Books client
+	booksClient := NewMockBooksClientIntegration()
+
+	// Real repository and service
+	ordersRepo := repository.NewOrdersRepository(pool)
+	ordersService := service.NewOrdersService(ordersRepo, booksClient, logger)
+	ordersHandler := NewOrdersHandler(ordersService, logger)
+
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		requestID := c.GetHeader("X-Request-ID")
+		if requestID == "" {
+			requestID = "test-request-id"
+		}
+		ctx := context.WithValue(c.Request.Context(), "request_id", requestID)
+		c.Request = c.Request.WithContext(ctx)
+		c.Header("X-Request-ID", requestID)
+		c.Next()
+	})
+
+	v1 := router.Group("/v1")
+	v1.POST("/orders", ordersHandler.CreateOrder)
+	v1.GET("/orders", ordersHandler.ListOrders)
+	v1.GET("/orders/:id", ordersHandler.GetOrder)
+
+	return router, pool
+}
+
+func TestCreateOrderIntegration_ValidOrder(t *testing.T) {
+	router, pool := setupRouter(t)
+	defer pool.Close()
+
+	orderRequest := models.CreateOrderRequest{
+		Items: []models.CreateOrderItemRequest{
+			{BookID: 1, Quantity: 2},
+			{BookID: 2, Quantity: 1},
+		},
+	}
+
+	requestBody, _ := json.Marshal(orderRequest)
+	req := httptest.NewRequest(http.MethodPost, "/v1/orders", bytes.NewReader(requestBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "test-integration-1")
+	req.Header.Set("X-Request-ID", "test-request-1")
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusCreated, w.Code)
+	assert.Contains(t, w.Header().Get("Location"), "/v1/orders/")
+
+	var response models.Order
+	err := json.Unmarshal(w.Body.Bytes(), &response)
+	assert.NoError(t, err)
+
+	// Verify response structure
+	assert.NotZero(t, response.ID)
+	assert.Len(t, response.Items, 2)
+	assert.Equal(t, "64.97", response.TotalAmount) // 2*19.99 + 1*24.99 = 64.97
+	assert.NotZero(t, response.CreatedAt)
+
+	// Verify first item
+	item1 := response.Items[0]
+	assert.Equal(t, int64(1), item1.BookID)
+	assert.Equal(t, "Rich Dad, Poor Dad", item1.BookTitle)
+	assert.Equal(t, "Robert Kiyosaki", item1.BookAuthor)
+	assert.Equal(t, 2, item1.Quantity)
+	assert.Equal(t, "19.99", item1.UnitPrice)
+	assert.Equal(t, "39.98", item1.LineTotal)
+
+	// Verify second item
+	item2 := response.Items[1]
+	assert.Equal(t, int64(2), item2.BookID)
+	assert.Equal(t, "Atomic Habits", item2.BookTitle)
+	assert.Equal(t, "James Clear", item2.BookAuthor)
+	assert.Equal(t, 1, item2.Quantity)
+	assert.Equal(t, "24.99", item2.UnitPrice)
+	assert.Equal(t, "24.99", item2.LineTotal)
+}
+
+func TestCreateOrderIntegration_BookNotFound(t *testing.T) {
+	router, pool := setupRouter(t)
+	defer pool.Close()
+
+	orderRequest := models.CreateOrderRequest{
+		Items: []models.CreateOrderItemRequest{
+			{BookID: 999, Quantity: 1}, // Non-existent book
+		},
+	}
+
+	requestBody, _ := json.Marshal(orderRequest)
+	req := httptest.NewRequest(http.MethodPost, "/v1/orders", bytes.NewReader(requestBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Request-ID", "test-request-2")
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusNotFound, w.Code)
+
+	var errorResponse models.ErrorResponse
+	err := json.Unmarshal(w.Body.Bytes(), &errorResponse)
+	assert.NoError(t, err)
+
+	assert.Equal(t, "BOOK_NOT_FOUND", errorResponse.Error)
+	assert.Contains(t, errorResponse.Message, "book with ID 999 not found")
+}
+
+func TestCreateOrderIntegration_BookInactive(t *testing.T) {
+	router, pool := setupRouter(t)
+	defer pool.Close()
+
+	orderRequest := models.CreateOrderRequest{
+		Items: []models.CreateOrderItemRequest{
+			{BookID: 3, Quantity: 1}, // Inactive book
+		},
+	}
+
+	requestBody, _ := json.Marshal(orderRequest)
+	req := httptest.NewRequest(http.MethodPost, "/v1/orders", bytes.NewReader(requestBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Request-ID", "test-request-3")
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusConflict, w.Code)
+
+	var errorResponse models.ErrorResponse
+	err := json.Unmarshal(w.Body.Bytes(), &errorResponse)
+	assert.NoError(t, err)
+
+	assert.Equal(t, "BOOK_NOT_ORDERABLE", errorResponse.Error)
+	assert.Contains(t, errorResponse.Message, "book with ID 3 is not orderable")
+}
+
+func TestCreateOrderIntegration_IdempotencySuccess(t *testing.T) {
+	router, pool := setupRouter(t)
+	defer pool.Close()
+
+	orderRequest := models.CreateOrderRequest{
+		Items: []models.CreateOrderItemRequest{
+			{BookID: 1, Quantity: 1},
+		},
+	}
+
+	requestBody, _ := json.Marshal(orderRequest)
+	idempotencyKey := "test-idempotency-success"
+
+	// First request
+	req1 := httptest.NewRequest(http.MethodPost, "/v1/orders", bytes.NewReader(requestBody))
+	req1.Header.Set("Content-Type", "application/json")
+	req1.Header.Set("Idempotency-Key", idempotencyKey)
+	req1.Header.Set("X-Request-ID", "test-request-4a")
+
+	w1 := httptest.NewRecorder()
+	router.ServeHTTP(w1, req1)
+
+	assert.Equal(t, http.StatusCreated, w1.Code)
+
+	var response1 models.Order
+	err := json.Unmarshal(w1.Body.Bytes(), &response1)
+	assert.NoError(t, err)
+	originalOrderID := response1.ID
+
+	// Second request with same idempotency key and body
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/orders", bytes.NewReader(requestBody))
+	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("Idempotency-Key", idempotencyKey)
+	req2.Header.Set("X-Request-ID", "test-request-4b")
+
+	w2 := httptest.NewRecorder()
+	router.ServeHTTP(w2, req2)
+
+	assert.Equal(t, http.StatusCreated, w2.Code) // Should return existing order
+
+	var response2 models.Order
+	err = json.Unmarshal(w2.Body.Bytes(), &response2)
+	assert.NoError(t, err)
+
+	// Should return the same order
+	assert.Equal(t, originalOrderID, response2.ID)
+	assert.Equal(t, response1.TotalAmount, response2.TotalAmount)
+}
+
+func TestCreateOrderIntegration_IdempotencyConflict(t *testing.T) {
+	router, pool := setupRouter(t)
+	defer pool.Close()
+
+	idempotencyKey := "test-idempotency-conflict"
+
+	// First request
+	orderRequest1 := models.CreateOrderRequest{
+		Items: []models.CreateOrderItemRequest{
+			{BookID: 1, Quantity: 1},
+		},
+	}
+	requestBody1, _ := json.Marshal(orderRequest1)
+
+	req1 := httptest.NewRequest(http.MethodPost, "/v1/orders", bytes.NewReader(requestBody1))
+	req1.Header.Set("Content-Type", "application/json")
+	req1.Header.Set("Idempotency-Key", idempotencyKey)
+	req1.Header.Set("X-Request-ID", "test-request-5a")
+
+	w1 := httptest.NewRecorder()
+	router.ServeHTTP(w1, req1)
+	assert.Equal(t, http.StatusCreated, w1.Code)
+
+	// Second request with same idempotency key but different body
+	orderRequest2 := models.CreateOrderRequest{
+		Items: []models.CreateOrderItemRequest{
+			{BookID: 2, Quantity: 1}, // Different book
+		},
+	}
+	requestBody2, _ := json.Marshal(orderRequest2)
+
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/orders", bytes.NewReader(requestBody2))
+	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("Idempotency-Key", idempotencyKey)
+	req2.Header.Set("X-Request-ID", "test-request-5b")
+
+	w2 := httptest.NewRecorder()
+	router.ServeHTTP(w2, req2)
+
+	assert.Equal(t, http.StatusConflict, w2.Code)
+
+	var errorResponse models.ErrorResponse
+	err := json.Unmarshal(w2.Body.Bytes(), &errorResponse)
+	assert.NoError(t, err)
+
+	assert.Equal(t, "IDEMPOTENCY_CONFLICT", errorResponse.Error)
+	assert.Contains(t, errorResponse.Message, idempotencyKey)
+}
+
+func TestCreateOrderIntegration_ValidationError(t *testing.T) {
+	router, pool := setupRouter(t)
+	defer pool.Close()
+
+	orderRequest := models.CreateOrderRequest{
+		Items: []models.CreateOrderItemRequest{
+			{BookID: 0, Quantity: 1}, // Invalid book ID
+		},
+	}
+
+	requestBody, _ := json.Marshal(orderRequest)
+	req := httptest.NewRequest(http.MethodPost, "/v1/orders", bytes.NewReader(requestBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Request-ID", "test-request-6")
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
+
+	var errorResponse models.ErrorResponse
+	err := json.Unmarshal(w.Body.Bytes(), &errorResponse)
+	assert.NoError(t, err)
+
+	assert.Equal(t, "VALIDATION_ERROR", errorResponse.Error)
+	assert.Contains(t, errorResponse.Message, "book_id must be greater than 0")
+}
+
+func TestCreateOrderIntegration_AtomicityOnFailure(t *testing.T) {
+	router, pool := setupRouter(t)
+	defer pool.Close()
+
+	// Get initial order count
+	var initialCount int
+	err := pool.QueryRow(context.Background(), "SELECT COUNT(*) FROM orders").Scan(&initialCount)
+	require.NoError(t, err)
+
+	// Try to create order with non-existent book (should fail)
+	orderRequest := models.CreateOrderRequest{
+		Items: []models.CreateOrderItemRequest{
+			{BookID: 1, Quantity: 1},   // Valid book
+			{BookID: 999, Quantity: 1}, // Invalid book - should cause failure
+		},
+	}
+
+	requestBody, _ := json.Marshal(orderRequest)
+	req := httptest.NewRequest(http.MethodPost, "/v1/orders", bytes.NewReader(requestBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Request-ID", "test-request-7")
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusNotFound, w.Code)
+
+	// Verify no partial writes occurred
+	var finalCount int
+	err = pool.QueryRow(context.Background(), "SELECT COUNT(*) FROM orders").Scan(&finalCount)
+	require.NoError(t, err)
+
+	assert.Equal(t, initialCount, finalCount, "No orders should be created on validation failure")
+
+	// Also check order_items table
+	var itemCount int
+	err = pool.QueryRow(context.Background(), "SELECT COUNT(*) FROM order_items").Scan(&itemCount)
+	require.NoError(t, err)
+
+	// The count might vary, but we need to ensure no orphaned items exist
+	// This is more of a consistency check
+}

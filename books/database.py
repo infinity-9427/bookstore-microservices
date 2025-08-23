@@ -1,5 +1,6 @@
 from decimal import Decimal
 from datetime import datetime
+from typing import Optional
 
 from sqlalchemy import (
     BIGINT,
@@ -7,6 +8,7 @@ from sqlalchemy import (
     TEXT,
     TIMESTAMP,
     BOOLEAN,
+    JSON,
     func,
     CheckConstraint,
 )
@@ -25,8 +27,12 @@ class Book(Base):
     id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
     title: Mapped[str] = mapped_column(TEXT, nullable=False)
     author: Mapped[str] = mapped_column(TEXT, nullable=False)
+    description: Mapped[str] = mapped_column(TEXT, nullable=False)
     price: Mapped[Decimal] = mapped_column(NUMERIC(10, 2), nullable=False)
     active: Mapped[bool] = mapped_column(BOOLEAN, nullable=False, server_default="true")
+    
+    # Image field - stores Cloudinary URL and public_id as JSON
+    image: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
@@ -43,5 +49,6 @@ class Book(Base):
     __table_args__ = (
         CheckConstraint("length(btrim(title)) > 0", name="check_title_not_empty"),
         CheckConstraint("length(btrim(author)) > 0", name="check_author_not_empty"),
+        CheckConstraint("length(btrim(description)) > 0", name="check_description_not_empty"),
         CheckConstraint("price >= 0", name="check_price_non_negative"),
     )

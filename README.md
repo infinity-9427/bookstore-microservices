@@ -1,596 +1,580 @@
-# Bookstore Microservices
+# Bookstore Microservices Architecture
 
-A distributed bookstore application built with microservices architecture.
+A modern microservices-based bookstore system built with FastAPI (Python) and Go, featuring concurrent request processing with BullMQ workers and PostgreSQL databases.
 
-## Tech Stack
+## 🏗️ Architecture Overview
 
-- **Books Service**: Python 3.11+ with FastAPI, SQLAlchemy, PostgreSQL
-- **Orders Service**: Go 1.24+ with Gin framework, PostgreSQL  
-- **Workers**: Node.js with TypeScript, BullMQ, Redis
-- **Database**: PostgreSQL 16
-- **Container**: Docker & Docker Compose
-
-## Quick Start
-
-### Prerequisites
-- Docker & Docker Compose
-- Git
-
-### Clone & Run
-
-```bash
-# Clone repository
-git clone <https://github.com/infinity-9427/bookstore-microservices-api.git>
-cd bookstore-microservices-api
-
-# Start all services
-docker-compose up -d
-
-# Check services status
-docker-compose ps
+```
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│   Books API     │    │   Orders API    │    │  BullMQ Workers │
+│   (FastAPI)     │    │     (Go)        │    │   (Node.js)     │
+│   Port: 8001    │    │   Port: 8082    │    │                 │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
+         │                       │                       │
+         │                       │                       │
+         ▼                       ▼                       ▼
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│   books_db      │    │   orders_db     │    │     Redis       │
+│ (PostgreSQL)    │    │ (PostgreSQL)    │    │   (Message      │
+│                 │    │                 │    │    Queue)       │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
 ```
 
-## Environment Variables
+### Technology Stack
 
-Before running the services, you need to create `.env` files for each microservice. Example files are provided as `.env.example` in each service directory.
+- **Books Service**: FastAPI (Python) with SQLAlchemy ORM
+- **Orders Service**: Go with Gin framework and PGX driver
+- **Workers**: Node.js with TypeScript and BullMQ
+- **Database**: PostgreSQL (separate databases for each service)
+- **Message Queue**: Redis for job processing
+- **Monitoring**: Prometheus + Grafana (optional profile)
 
-### Books Service
-Copy and configure `books/.env.example` to `books/.env`:
+## 📖 API Documentation
+
+### Books API (FastAPI - Port 8001)
+
+#### Endpoints
+
+| Method | Endpoint | Description | Auth |
+|--------|----------|-------------|------|
+| `GET` | `/health` | Service health check | No |
+| `POST` | `/v1/books` | Create a new book | No |
+| `GET` | `/v1/books` | List all active books with pagination | No |
+| `GET` | `/v1/books/{id}` | Get book by ID | No |
+| `PUT` | `/v1/books/{id}` | Update book | No |
+| `DELETE` | `/v1/books/{id}` | Soft delete book (sets active=false) | No |
+
+#### Book Model
+
+**Required Fields:**
+- `title` (string): Book title
+- `author` (string): Book author  
+- `description` (string): Book description (supports long text)
+- `price` (decimal): Book price (2 decimal places, ≥ 0)
+
+**Optional Fields:**
+- `image` (object): Book cover image data
+  - `url` (string): Cloudinary image URL
+  - `public_id` (string): Cloudinary public ID
+
+**Auto-generated Fields:**
+- `id` (integer): Unique book identifier
+- `active` (boolean): Soft delete flag (default: true)
+- `created_at` (datetime): Creation timestamp
+- `updated_at` (datetime): Last update timestamp
+
+#### API Examples & Usage
+
+All prices are returned as strings with exactly 2 decimal places for precision (e.g. "19.99"). Pagination uses `limit` (1-100) and `offset` (≥0). Results are ordered by `created_at DESC` (newest first).
+
+##### Create Book
 ```bash
-cp books/.env.example books/.env
-```
-
-Required variables:
-- `BOOKS_DB_DSN`: PostgreSQL connection string for books database
-- `PORT`: Port number for the books service (default: 8001)
-
-### Orders Service  
-Copy and configure `orders/.env.example` to `orders/.env`:
-```bash
-cp orders/.env.example orders/.env
-```
-
-Required variables:
-- `DATABASE_URL`: PostgreSQL connection string for orders database
-- `BOOKS_SERVICE_URL`: URL of the books service for inter-service communication
-- `PORT`: Port number for the orders service (default: 8082)
-
-## Local Development
-
-### With Docker Compose (Recommended)
-```bash
-# Build and start all services
-docker-compose up --build
-
-# Start specific service
-docker-compose up books
-
-# View logs
-docker-compose logs -f books
-
-# Stop services
-docker-compose down
-```
-
-### Individual Services
-
-#### Books Service
-```bash
-cd books
-python -m pip install -e .
-uvicorn main:app --host 0.0.0.0 --port 8001 --reload
-```
-
-#### Orders Service
-```bash
-cd orders
-go run cmd/api/main.go
-```
-
-#### Workers
-```bash
-cd workers
-pnpm install
-pnpm dev
-```
-
-## API Endpoints
-
-### Books Service (Port 8001)
-
-#### Get All Books
-```bash
-GET /v1/books
-curl http://localhost:8001/v1/books
-```
-
-Response:
-```json
-[
-  {
-    "id": 1,
+curl -i -X POST http://localhost:8001/v1/books \
+  -H 'Content-Type: application/json' \
+  -d '{
     "title": "The Great Gatsby",
     "author": "F. Scott Fitzgerald",
-    "price": "12.99",
-    "active": true,
-    "created_at": "2025-08-21T01:25:12.438013Z",
-    "updated_at": "2025-08-21T01:25:12.438013Z"
-  }
-]
-```
-
-#### Get Book by ID
-```bash
-GET /v1/books/{id}
-curl http://localhost:8001/v1/books/1
-```
-
-#### Create Book
-```bash
-POST /v1/books
-curl -X POST http://localhost:8001/v1/books \
-  -H "Content-Type: application/json" \
-  -d '{
-    "title": "1984",
-    "author": "George Orwell", 
-    "price": "15.99"
+    "description": "A classic American novel set in the Jazz Age, exploring themes of wealth, love, and the American Dream.",
+    "price": "19.99"
   }'
 ```
 
-#### Update Book (Partial Updates Supported)
-```bash
-PUT /v1/books/{id}
-curl -X PUT http://localhost:8001/v1/books/1 \
-  -H "Content-Type: application/json" \
-  -d '{
-    "title": "Animal Farm",
-    "author": "George Orwell"
-  }'
-```
-
-#### Delete Book (Soft Delete)
-```bash
-DELETE /v1/books/{id}
-curl -X DELETE http://localhost:8001/v1/books/1
-```
-
-#### Health Check
-```bash
-GET /health
-curl http://localhost:8001/health
-```
-
-### Orders Service (Port 8082)
-
-#### Create Order
-```bash
-POST /v1/orders
-curl -X POST http://localhost:8082/v1/orders \
-  -H "Content-Type: application/json" \
-  -d '{
-    "book_id": 1,
-    "quantity": 2
-  }'
-```
-
-Response:
+Example Response (201):
 ```json
 {
   "id": 1,
-  "book_id": 1,
-  "book_title": "The Great Gatsby",
-  "book_author": "F. Scott Fitzgerald",
-  "quantity": 2,
-  "unit_price": 12.99,
-  "total_price": 25.98,
-  "created_at": "2025-08-21T11:58:24.399061Z"
+  "title": "The Great Gatsby",
+  "author": "F. Scott Fitzgerald",
+  "description": "A classic American novel set in the Jazz Age, exploring themes of wealth, love, and the American Dream.",
+  "price": "19.99",
+  "active": true,
+  "image": null,
+  "created_at": "2023-12-07T10:30:00Z",
+  "updated_at": "2023-12-07T10:30:00Z"
 }
 ```
 
-#### Get All Orders
+##### Get Book by ID
 ```bash
-GET /v1/orders
-curl http://localhost:8082/v1/orders
+curl -s http://localhost:8001/v1/books/1 | jq '.'
 ```
 
-Response:
+##### List Books (Paginated)
+```bash
+curl -i 'http://localhost:8001/v1/books?limit=10&offset=20'
+```
+Example Response Body:
 ```json
-[
-  {
-    "id": 1,
-    "book_id": 1,
-    "book_title": "The Great Gatsby",
-    "book_author": "F. Scott Fitzgerald",
-    "quantity": 2,
-    "unit_price": 12.99,
-    "total_price": 25.98,
-    "created_at": "2025-08-21T11:58:24.399061Z"
-  }
-]
+{
+  "data": [
+    {
+      "id": 3,
+      "title": "1984",
+      "author": "George Orwell",
+      "description": "A dystopian social science fiction novel and cautionary tale.",
+      "price": "29.99",
+      "active": true,
+      "image": null,
+      "created_at": "2023-12-07T11:00:00Z",
+      "updated_at": "2023-12-07T11:00:00Z"
+    }
+  ],
+  "total": 50,
+  "limit": 10,
+  "offset": 20
+}
+```
+Important Headers:
+```
+X-Total-Count: 50
+Link: </v1/books?limit=10&offset=30>; rel="next", </v1/books?limit=10&offset=10>; rel="prev"
 ```
 
-#### Get Order by ID
+##### Empty Page Example
 ```bash
-GET /v1/orders/{id}
+curl -s 'http://localhost:8001/v1/books?limit=20&offset=1000'
+```
+Returns:
+```json
+{ "data": [], "total": 50, "limit": 20, "offset": 1000 }
+```
+
+##### Validation Errors
+```bash
+# Invalid limit (0)
+curl -i 'http://localhost:8001/v1/books?limit=0'
+
+# Invalid offset (-1)
+curl -i 'http://localhost:8001/v1/books?offset=-1'
+```
+
+##### Update Book (Partial)
+```bash
+curl -i -X PUT http://localhost:8001/v1/books/1 \
+  -H 'Content-Type: application/json' \
+  -d '{"price": "24.99", "description": "Updated description."}'
+```
+
+##### Soft Delete Book
+```bash
+curl -i -X DELETE http://localhost:8001/v1/books/1
+```
+
+##### cURL Quick Reference (Books)
+```bash
+# Create
+curl -X POST http://localhost:8001/v1/books -H 'Content-Type: application/json' -d '{"title":"T","author":"A","description":"D","price":"9.99"}'
+# List (defaults)
+curl http://localhost:8001/v1/books
+# List (explicit pagination)
+curl 'http://localhost:8001/v1/books?limit=5&offset=10'
+# Get
+curl http://localhost:8001/v1/books/1
+# Update
+curl -X PUT http://localhost:8001/v1/books/1 -H 'Content-Type: application/json' -d '{"price":"11.49"}'
+# Delete (soft)
+curl -X DELETE http://localhost:8001/v1/books/1
+```
+
+### Orders API (Go - Port 8082)
+
+#### Endpoints
+
+| Method | Endpoint | Description | Auth |
+|--------|----------|-------------|------|
+| `GET` | `/health` | Service health check | No |
+| `POST` | `/v1/orders` | Create a new order | No |
+| `GET` | `/v1/orders` | List all orders | No |
+| `GET` | `/v1/orders/{id}` | Get order by ID | No |
+
+#### Order Model
+
+The orders system supports **multiple books per order** using a relational design:
+
+**Order:**
+- `id` (integer): Unique order identifier
+- `created_at` (datetime): Order creation timestamp
+- `items` (array): Array of order items
+
+**Order Item:**
+- `id` (integer): Unique item identifier
+- `order_id` (integer): Reference to parent order
+- `book_id` (integer): Reference to book (validated via Books API)
+- `quantity` (integer): Number of books (1-10,000)
+- `unit_price` (decimal): Price per book at time of order
+- `total_price` (decimal): Calculated total (quantity × unit_price)
+- `created_at` (datetime): Item creation timestamp
+
+#### API Examples & Usage
+
+Pagination: `limit` (1-200, default 50, capped at 200), `offset` (≥0). Ordered by `created_at DESC`.
+
+##### Create Order (Single Book)
+```bash
+curl -i -X POST http://localhost:8082/v1/orders \
+  -H 'Content-Type: application/json' \
+  -d '{"items":[{"book_id":1,"quantity":2}]}'
+```
+
+##### Create Order (Multiple Books)
+```bash
+curl -i -X POST http://localhost:8082/v1/orders \
+  -H 'Content-Type: application/json' \
+  -d '{"items":[{"book_id":1,"quantity":2},{"book_id":3,"quantity":1},{"book_id":5,"quantity":3}]}'
+```
+
+Example Response (201):
+```json
+{
+  "id": 123,
+  "total_price": "64.97",
+  "items": [
+    {
+      "id": 1,
+      "order_id": 123,
+      "book_id": 1,
+      "book_title": "The Great Gatsby",
+      "book_author": "F. Scott Fitzgerald",
+      "quantity": 2,
+      "unit_price": "19.99",
+      "total_price": "39.98",
+      "created_at": "2023-12-07T10:30:00Z"
+    }
+  ],
+  "created_at": "2023-12-07T10:30:00Z"
+}
+```
+Headers:
+```
+Location: /v1/orders/123
+Content-Type: application/json
+```
+
+##### Get Order by ID
+```bash
+curl -s http://localhost:8082/v1/orders/123 | jq '.'
+```
+
+##### List Orders (Paginated)
+```bash
+curl -i 'http://localhost:8082/v1/orders?limit=20&offset=40'
+```
+Response Body (truncated):
+```json
+{
+  "data": [
+    {
+      "id": 2,
+      "total_price": "29.99",
+      "items": [
+        {
+          "id": 3,
+          "order_id": 2,
+          "book_id": 5,
+          "book_title": "1984",
+          "book_author": "George Orwell",
+          "quantity": 1,
+          "unit_price": "29.99",
+          "total_price": "29.99",
+          "created_at": "2023-12-07T11:00:00Z"
+        }
+      ],
+      "created_at": "2023-12-07T11:00:00Z"
+    }
+  ],
+  "total": 150,
+  "limit": 20,
+  "offset": 40
+}
+```
+Headers:
+```
+X-Total-Count: 150
+Link: </v1/orders?limit=20&offset=60>; rel="next", </v1/orders?limit=20&offset=20>; rel="prev"
+```
+
+##### Empty Page
+```bash
+curl -s 'http://localhost:8082/v1/orders?limit=20&offset=1000'
+```
+Returns:
+```json
+{ "data": [], "total": 150, "limit": 20, "offset": 1000 }
+```
+
+##### cURL Quick Reference (Orders)
+```bash
+# Create single-book order
+curl -X POST http://localhost:8082/v1/orders -H 'Content-Type: application/json' -d '{"items":[{"book_id":1,"quantity":1}]}'
+# Create multi-book order
+curl -X POST http://localhost:8082/v1/orders -H 'Content-Type: application/json' -d '{"items":[{"book_id":1,"quantity":2},{"book_id":3,"quantity":1}]}'
+# List (defaults)
+curl http://localhost:8082/v1/orders
+# Paginated list
+curl 'http://localhost:8082/v1/orders?limit=10&offset=20'
+# Get by ID
 curl http://localhost:8082/v1/orders/1
 ```
 
-#### Health Check
+## 🚀 Getting Started
+
+### Prerequisites
+- Docker & Docker Compose
+- pnpm (for workers development)
+
+### Quick Start
 ```bash
-GET /health
-curl http://localhost:8082/health
-```
+# Clone the repository
+git clone <repository-url>
+cd bookstore-microservices
 
-Response:
-```json
-{
-  "status": "healthy",
-  "services": {
-    "database": "healthy",
-    "books": "healthy"
-  }
-}
-```
+# Start all services
+docker compose up -d
 
-## Service Ports
-
-- Books API: http://localhost:8001
-- Orders API: http://localhost:8082
-- PostgreSQL: localhost:5432
-- Prometheus: http://localhost:9090
-- Grafana: http://localhost:3000
-
-## Database
-
-PostgreSQL database with automatic initialization via Docker volumes:
-- **Books Database**: `books_db` 
-  - User: `books_user` / `books_password`
-- **Orders Database**: `orders_db`
-  - User: `orders_user` / `orders_password`
-- Tables auto-created on first run
-
-## Architecture
-
-### Service Independence
-- **Books Service**: FastAPI with independent PostgreSQL database
-- **Orders Service**: Go/Gin with independent PostgreSQL database
-- **Communication**: HTTP-only, no shared database access
-- **Data Strategy**: Snapshot pattern - orders store book details at creation time
-
-### Key Features
-- **Circuit Breaker**: Orders service resilient to Books service failures
-- **Health Checks**: Deep health monitoring with dependency status
-- **Structured Logging**: JSON logs with request correlation IDs
-- **API Versioning**: `/v1/` prefix for future compatibility
-- **Prometheus Metrics**: Performance monitoring for both services
-- **Graceful Shutdown**: Proper cleanup and signal handling
-
-## Monitoring with Prometheus & Grafana
-
-Start the monitoring stack with:
-```bash
+# With monitoring (optional)
 docker compose --profile monitoring up -d
 ```
 
-This provides:
-- **Prometheus**: Metrics collection at http://localhost:9090
-- **Grafana**: Dashboards at http://localhost:3000 (admin/admin)
-- **Golden Signals**: Service health, request rate, error rate, latency
+### Service URLs
+- **Books API**: http://localhost:8001
+- **Orders API**: http://localhost:8082  
+- **Grafana**: http://localhost:3000 (admin/admin)
+- **Prometheus**: http://localhost:9090
 
-### Monitoring URLs
-- Prometheus UI: http://localhost:9090
-- Grafana Dashboards: http://localhost:3000 (login: admin/admin)
-- Orders Service Metrics: http://localhost:8082/metrics
-
-### Key Prometheus Queries for Orders Service
-
-#### Service Availability
-```promql
-# Check if Orders service is up
-up{job="orders"}
-
-# Alert when service is down
-up{job="orders"} == 0
-```
-
-#### Request Rate (RPS)
-```promql
-# Total requests per second
-sum(rate(http_requests_total{job="orders"}[5m]))
-
-# Requests per second by endpoint
-sum(rate(http_requests_total{job="orders"}[5m])) by (handler)
-
-# Requests per second by method
-sum(rate(http_requests_total{job="orders"}[5m])) by (method)
-```
-
-#### Error Rate
-```promql
-# 5xx error rate percentage
-sum(rate(http_requests_total{job="orders",status_class="5xx"}[5m])) / sum(rate(http_requests_total{job="orders"}[5m])) * 100
-
-# 4xx error rate percentage  
-sum(rate(http_requests_total{job="orders",status_class="4xx"}[5m])) / sum(rate(http_requests_total{job="orders"}[5m])) * 100
-
-# Total error rate (4xx + 5xx)
-sum(rate(http_requests_total{job="orders",status_class=~"4xx|5xx"}[5m])) / sum(rate(http_requests_total{job="orders"}[5m])) * 100
-```
-
-#### Response Latency
-```promql
-# P95 latency (95th percentile)
-histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{job="orders"}[5m])))
-
-# P50 latency (median)
-histogram_quantile(0.50, sum by (le) (rate(http_request_duration_seconds_bucket{job="orders"}[5m])))
-
-# P99 latency
-histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{job="orders"}[5m])))
-
-# Average latency by endpoint
-sum(rate(http_request_duration_seconds_sum{job="orders"}[5m])) by (handler) / sum(rate(http_request_duration_seconds_count{job="orders"}[5m])) by (handler)
-```
-
-### Grafana Dashboard Setup
-
-1. **Access Grafana**: http://localhost:3000 (admin/admin)
-2. **Add Prometheus Data Source**:
-   - Go to Configuration → Data Sources
-   - Add Prometheus with URL: http://prometheus:9090
-3. **Create Dashboard** with panels for:
-   - Service uptime
-   - Request rate (RPS)
-   - Error rate percentage
-   - Response latency percentiles
-   - Active connections
-
-### Alerting Rules
-
-The system includes predefined alerts in `monitoring/rules/alerts.yml`:
-
-#### OrdersServiceDown
-- **Condition**: `up{job="orders"} == 0`
-- **Duration**: 1 minute
-- **Severity**: Critical
-- **Description**: Triggers when Prometheus can't scrape the orders service
-
-#### OrdersHigh5xxRate  
-- **Condition**: 5xx error rate > 10%
-- **Duration**: 5 minutes
-- **Severity**: Warning
-- **Description**: Triggers when error rate exceeds threshold
-
-#### OrdersHighLatencyP95
-- **Condition**: P95 latency > 1 second
-- **Duration**: 5 minutes  
-- **Severity**: Warning
-- **Description**: Triggers when response times are too slow
-
-## API Testing Guide
-
-### Complete API Testing Examples
-
-#### 1. End-to-End Workflow with cURL
-
+### Database Access
 ```bash
-# Step 1: Create a book first
-curl -X POST http://localhost:8001/v1/books \
+# PostgreSQL (both books_db and orders_db)
+psql -h localhost -p 5432 -U postgres
+```
+
+## 📊 Database Schema
+
+### Books Database (`books_db`)
+```sql
+CREATE TABLE books (
+    id BIGSERIAL PRIMARY KEY,
+    title TEXT NOT NULL CHECK (length(btrim(title)) > 0),
+    author TEXT NOT NULL CHECK (length(btrim(author)) > 0),
+    description TEXT NOT NULL CHECK (length(btrim(description)) > 0),
+    price NUMERIC(10,2) NOT NULL CHECK (price >= 0),
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    image JSONB NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+### Orders Database (`orders_db`)
+```sql
+-- Orders table (simplified but supports multiple books)
+CREATE TABLE orders (
+    id SERIAL PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Order items table for multiple books per order
+CREATE TABLE order_items (
+    id SERIAL PRIMARY KEY,
+    order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+    book_id INTEGER NOT NULL,
+    quantity INTEGER NOT NULL CHECK (quantity > 0),
+    unit_price DECIMAL(10,2) NOT NULL CHECK (unit_price >= 0),
+    total_price DECIMAL(10,2) GENERATED ALWAYS AS (quantity * unit_price) STORED,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+```
+
+## 🔧 Worker System (BullMQ)
+
+The system includes a Node.js worker setup using BullMQ for handling concurrent operations:
+
+### Features
+- **Concurrent Processing**: Handle multiple order requests simultaneously
+- **Queue Management**: Redis-based job queuing
+- **Fault Tolerance**: Job retries and error handling
+- **Scalability**: Multiple worker instances (2 replicas by default)
+
+### Worker Commands
+```bash
+# Development
+cd workers
+pnpm install
+pnpm run dev
+
+# Test job producer
+pnpm run test-producer
+```
+
+## 🔍 Monitoring
+
+When started with the monitoring profile:
+- **Grafana Dashboard**: http://localhost:3000
+- **Prometheus Metrics**: http://localhost:9090
+- **Health Checks**: All services expose `/health` endpoints
+
+## 📋 Business Logic & Validations
+
+### Books Service
+- **Validation**: Title, author, and description cannot be empty
+- **Price Precision**: Supports up to 2 decimal places
+- **Soft Deletion**: Books are marked as `active=false` instead of physical deletion
+- **Image Storage**: Optional Cloudinary integration for book covers
+
+### Orders Service  
+- **Book Validation**: Validates book exists and is active via Books API
+- **Price Snapshot**: Captures book price at time of order creation
+- **Quantity Limits**: 1-10,000 books per item
+- **Duplicate Prevention**: Cannot add same book_id multiple times in one order
+- **Atomic Operations**: Order and items created in single database transaction
+
+## 🧪 Testing
+
+### Books Service (FastAPI)
+```bash
+cd books
+pytest -v
+```
+
+### Orders Service (Go)  
+```bash
+cd orders
+go test ./...
+```
+
+### Manual Testing Script
+```bash
+# 1. Create a book
+BOOK_RESPONSE=$(curl -s -X POST http://localhost:8001/v1/books \
   -H "Content-Type: application/json" \
-  -d '{
-    "title": "The Catcher in the Rye", 
-    "author": "J.D. Salinger", 
-    "price": 18.99
-  }'
+  -d '{"title": "Test Book", "author": "Test Author", "description": "A test book description", "price": "19.99"}')
 
-# Expected response: {"id": 1, "title": "The Catcher in the Rye", ...}
+BOOK_ID=$(echo $BOOK_RESPONSE | jq -r '.id')
+echo "Created book with ID: $BOOK_ID"
 
-# Step 2: Create an order for the book
-curl -X POST http://localhost:8082/v1/orders \
+# 2. Create an order with multiple books
+ORDER_RESPONSE=$(curl -s -X POST http://localhost:8082/v1/orders \
   -H "Content-Type: application/json" \
-  -d '{
-    "book_id": 1, 
-    "quantity": 3
-  }'
+  -d "{\"items\": [{\"book_id\": $BOOK_ID, \"quantity\": 2}]}")
 
-# Expected response: Order with book details snapshotted
+ORDER_ID=$(echo $ORDER_RESPONSE | jq -r '.id')
+echo "Created order with ID: $ORDER_ID"
 
-# Step 3: Verify the order
-curl http://localhost:8082/v1/orders/1
-
-# Step 4: List all orders
-curl http://localhost:8082/v1/orders
-
-# Step 5: Check health status
-curl http://localhost:8082/health
+# 3. Verify order
+curl -s http://localhost:8082/v1/orders/$ORDER_ID | jq '.'
 ```
 
-#### 2. Postman Collection Examples
+## ⚠️ Assumptions & Limitations
 
-**Create Order (POST /v1/orders)**
-```json
-{
-  "method": "POST",
-  "url": "{{base_url}}/v1/orders",
-  "headers": {
-    "Content-Type": "application/json"
-  },
-  "body": {
-    "book_id": 1,
-    "quantity": 2
-  }
-}
+### Current Architecture Assumptions
+
+1. **No Authentication**: All endpoints are publicly accessible
+2. **Single Tenant**: No multi-tenancy support
+3. **No Inventory Management**: No stock tracking or reservation
+4. **Price Changes**: Orders capture price at creation time, subsequent book price changes don't affect existing orders
+5. **Soft Deletes**: Books are soft-deleted only (active=false)
+
+### Known Limitations
+
+1. **Deleted Book Scenario**: 
+   - **Issue**: If a book is deleted (soft-deleted) after an order is created, the order still references the book_id
+   - **Current Behavior**: Order remains valid with captured price information
+   - **Implication**: Orders serve as historical records even for deleted books
+   - **Workaround**: Book information is snapshotted at order time
+
+2. **No Order Modifications**: 
+   - Orders cannot be updated or cancelled once created
+   - No inventory validation or reservation
+
+3. **No Payment Processing**: 
+   - Orders are created but no payment integration exists
+   - No order status management (pending, paid, shipped, etc.)
+
+4. **Cross-Service Data Consistency**:
+   - Book price changes don't retroactively affect existing orders (by design)
+   - No distributed transaction management between services
+
+5. **Limited Error Handling**:
+   - If Books API is down, orders cannot be created
+   - No circuit breaker pattern implemented (simplified for demo)
+
+6. **Scalability Considerations**:
+   - Database connections not optimized for high concurrency
+   - No horizontal scaling strategy documented
+
+### Production Readiness Gaps
+
+To make this production-ready, consider adding:
+- Authentication & authorization
+- Input validation & sanitization  
+- Rate limiting
+- Comprehensive error handling
+- Health checks with dependencies
+- Distributed tracing
+- Backup & disaster recovery
+- Security headers & HTTPS
+- API versioning strategy
+- Database migrations management
+
+## 📝 Environment Variables
+
+### Books Service (.env file in books/)
+```env
+DATABASE_URL=postgresql://postgres:postgres@db/books_db
+PORT=8001
+LOG_LEVEL=info
 ```
 
-**Environment Variables for Postman:**
-- `base_url`: `http://localhost:8082`
-- `books_url`: `http://localhost:8001`
+### Orders Service (.env file in orders/)
+```env
+DATABASE_URL=postgresql://postgres:postgres@db/orders_db
+BOOKS_SERVICE_URL=http://books:8001
+PORT=8082
+HTTP_TIMEOUT=10s
+```
 
-#### 3. Advanced Testing Scenarios
+### Workers Service (.env file in workers/)
+```env
+REDIS_HOST=redis
+REDIS_PORT=6379
+WORKER_CONCURRENCY=5
+```
 
-**Load Testing with Multiple Orders:**
+## 🛠️ Development
+
+### Code Structure
+```
+├── books/                 # FastAPI Books service
+│   ├── main.py           # FastAPI app and routes
+│   ├── models.py         # Pydantic models
+│   ├── database.py       # SQLAlchemy models
+│   └── tests/            # Unit tests
+├── orders/               # Go Orders service
+│   ├── cmd/api/main.go   # Application entry point
+│   ├── internal/         # Internal packages
+│   │   ├── handlers/     # HTTP handlers
+│   │   ├── service/      # Business logic
+│   │   ├── repository/   # Data access
+│   │   └── models/       # Data structures
+├── workers/              # Node.js Workers service
+│   ├── src/
+│   │   ├── worker.ts     # BullMQ worker implementation
+│   │   └── queue.ts      # Queue definitions
+├── docker/               # Docker initialization scripts
+│   └── init/             # Database schema and seed data
+└── docker-compose.yml    # Service orchestration
+```
+
+### Local Development
 ```bash
-# Create multiple orders rapidly
-for i in {1..10}; do
-  curl -X POST http://localhost:8082/v1/orders \
-    -H "Content-Type: application/json" \
-    -d "{\"book_id\": 1, \"quantity\": $i}" &
-done
-wait
+# Start dependencies only
+docker compose up -d db redis
 
-# Check all orders were created
-curl http://localhost:8082/v1/orders
+# Run services locally for development
+cd books && python -m uvicorn main:app --reload --port 8001
+cd orders && go run cmd/api/main.go
+cd workers && pnpm dev
 ```
 
-**Circuit Breaker Testing:**
-```bash
-# Stop books service to test circuit breaker
-docker stop $(docker ps -q --filter name=books)
+---
 
-# Try to create order (should fail gracefully)
-curl -X POST http://localhost:8082/v1/orders \
-  -H "Content-Type: application/json" \
-  -d '{"book_id": 1, "quantity": 2}' \
-  -w "\nHTTP Status: %{http_code}\nResponse Time: %{time_total}s\n"
-
-# Check health endpoint (should show books service as unhealthy)
-curl http://localhost:8082/health | jq .
-
-# Restart books service
-docker start $(docker ps -aq --filter name=books)
-```
-
-### Error Handling & Troubleshooting
-
-#### Common API Errors
-
-**1. Validation Errors (400 Bad Request)**
-```bash
-# Invalid book_id (negative number)
-curl -X POST http://localhost:8082/v1/orders \
-  -H "Content-Type: application/json" \
-  -d '{"book_id": -1, "quantity": 2}'
-
-# Invalid quantity (zero or negative)
-curl -X POST http://localhost:8082/v1/orders \
-  -H "Content-Type: application/json" \
-  -d '{"book_id": 1, "quantity": 0}'
-
-# Missing required fields
-curl -X POST http://localhost:8082/v1/orders \
-  -H "Content-Type: application/json" \
-  -d '{"book_id": 1}'
-```
-
-**2. Resource Not Found (404)**
-```bash
-# Book doesn't exist
-curl -X POST http://localhost:8082/v1/orders \
-  -H "Content-Type: application/json" \
-  -d '{"book_id": 999, "quantity": 2}'
-
-# Order doesn't exist
-curl http://localhost:8082/v1/orders/999
-```
-
-**3. Service Unavailable (503)**
-```bash
-# When books service is down
-docker stop $(docker ps -q --filter name=books)
-curl -X POST http://localhost:8082/v1/orders \
-  -H "Content-Type: application/json" \
-  -d '{"book_id": 1, "quantity": 2}'
-```
-
-#### Troubleshooting with Monitoring
-
-When API calls fail, check these monitoring sources:
-
-**1. Check Service Health**
-```bash
-# Orders service health
-curl http://localhost:8082/health
-
-# Expected healthy response:
-{
-  "status": "healthy",
-  "services": {
-    "database": "healthy", 
-    "books": "healthy"
-  }
-}
-```
-
-**2. Review Prometheus Metrics**
-Visit http://localhost:9090 and run these queries:
-
-```promql
-# Check if services are running
-up{job="orders"}
-
-# Recent error rate
-sum(rate(http_requests_total{job="orders",status_class="5xx"}[5m]))
-
-# High latency requests
-histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job="orders"}[5m])))
-
-# Failed requests by endpoint
-sum(rate(http_requests_total{job="orders",status_class=~"4xx|5xx"}[5m])) by (handler)
-```
-
-**3. Check Grafana Dashboards**
-Visit http://localhost:3000 (admin/admin) to view:
-- Service uptime graphs
-- Request rate trends
-- Error rate spikes
-- Latency percentiles
-- Alert status
-
-**4. Review Application Logs**
-```bash
-# Orders service logs
-docker compose logs -f orders
-
-# Filter for errors
-docker compose logs orders | grep -E "(ERROR|WARN|error|failed)"
-
-# Books service logs (if needed)
-docker compose logs -f books
-```
-
-**5. Database Connection Issues**
-```bash
-# Check database connectivity
-docker compose exec orders-db psql -U orders_user -d orders_db -c "SELECT 1;"
-
-# Check database logs
-docker compose logs db
-```
-
-#### Performance Debugging
-
-**Identify Slow Endpoints:**
-```promql
-# Average response time by endpoint (last 5 minutes)
-sum(rate(http_request_duration_seconds_sum{job="orders"}[5m])) by (handler) 
-/ 
-sum(rate(http_request_duration_seconds_count{job="orders"}[5m])) by (handler)
-```
-
-**Find High Error Rate Endpoints:**
-```promql
-# Error rate by endpoint
-sum(rate(http_requests_total{job="orders",status_class=~"4xx|5xx"}[5m])) by (handler)
-/ 
-sum(rate(http_requests_total{job="orders"}[5m])) by (handler) * 100
-```
-
-**Monitor Resource Usage:**
-```bash
-# Container resource usage
-docker stats
-
-# Detailed container metrics
-docker inspect orders | grep -A 10 "Memory"
-```
-
+This microservices architecture provides a solid foundation for a bookstore system with room for future enhancements and scaling as business requirements evolve.

@@ -13,7 +13,7 @@ func NewLogger() *slog.Logger {
 	opts := &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	}
-	
+
 	handler := slog.NewJSONHandler(os.Stdout, opts)
 	return slog.New(handler)
 }
@@ -23,17 +23,17 @@ func LoggingMiddleware(logger *slog.Logger) gin.HandlerFunc {
 		if param.Path == "/health" || param.Path == "/metrics" {
 			return ""
 		}
-		
+
 		requestID := param.Keys["request_id"]
 		if requestID == nil {
 			requestID = "unknown"
 		}
-		
+
 		handler := param.Keys["handler"]
 		if handler == nil {
 			handler = param.Path
 		}
-		
+
 		logger.Info("HTTP request",
 			slog.String("service", serviceName),
 			slog.String("method", param.Method),
@@ -42,7 +42,7 @@ func LoggingMiddleware(logger *slog.Logger) gin.HandlerFunc {
 			slog.Duration("latency", param.Latency),
 			slog.String("request_id", requestID.(string)),
 		)
-		
+
 		return ""
 	})
 }

@@ -11,7 +11,9 @@ dependencies = [
     "psycopg2-binary>=2.9.0",
     "pydantic>=2.0.0",
     "python-dotenv>=1.0.0",
-    "prometheus-fastapi-instrumentator>=7.1.0"
+    "prometheus-fastapi-instrumentator>=7.1.0",
+    "cloudinary>=1.36.0",
+    "python-multipart>=0.0.6"
 ]
 
 [project.optional-dependencies]

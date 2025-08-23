@@ -19,7 +19,8 @@ class TestBooksAPI:
         """Test successful book creation"""
         book_data = {
             "title": "The Great Gatsby",
-            "author": "F. Scott Fitzgerald", 
+            "author": "F. Scott Fitzgerald",
+            "description": "A classic American novel set in the Jazz Age",
             "price": "19.99"
         }
         response = client.post("/v1/books", json=book_data)
@@ -28,8 +29,10 @@ class TestBooksAPI:
         data = response.json()
         assert data["title"] == "The Great Gatsby"
         assert data["author"] == "F. Scott Fitzgerald"
+        assert data["description"] == "A classic American novel set in the Jazz Age"
         assert Decimal(data["price"]) == Decimal("19.99")
         assert data["active"] is True
+        assert data["image"] is None  # Image should be None by default
         assert "id" in data
         assert "created_at" in data
         assert "updated_at" in data
@@ -39,6 +42,7 @@ class TestBooksAPI:
         invalid_data = {
             "title": "",  # Empty title
             "author": "Author Name",
+            "description": "Valid description",
             "price": "19.99"
         }
         response = client.post("/v1/books", json=invalid_data)
@@ -73,8 +77,8 @@ class TestBooksAPI:
     def test_get_books_with_data(self, client: TestClient, test_db_session):
         """Test getting books when data exists"""
         # Create test books directly in database
-        book1 = Book(title="Book 1", author="Author 1", price=Decimal("10.99"))
-        book2 = Book(title="Book 2", author="Author 2", price=Decimal("15.99"))
+        book1 = Book(title="Book 1", author="Author 1", description="Description 1", price=Decimal("10.99"))
+        book2 = Book(title="Book 2", author="Author 2", description="Description 2", price=Decimal("15.99"))
         test_db_session.add_all([book1, book2])
         test_db_session.commit()
         
@@ -89,7 +93,7 @@ class TestBooksAPI:
     def test_get_books_pagination(self, client: TestClient, test_db_session):
         """Test books pagination"""
         # Create multiple test books
-        books = [Book(title=f"Book {i}", author=f"Author {i}", price=Decimal("10.99")) 
+        books = [Book(title=f"Book {i}", author=f"Author {i}", description=f"Description {i}", price=Decimal("10.99")) 
                 for i in range(5)]
         test_db_session.add_all(books)
         test_db_session.commit()
@@ -106,7 +110,7 @@ class TestBooksAPI:
 
     def test_get_book_by_id_success(self, client: TestClient, test_db_session):
         """Test getting a specific book by ID"""
-        book = Book(title="Test Book", author="Test Author", price=Decimal("20.99"))
+        book = Book(title="Test Book", author="Test Author", description="Test description", price=Decimal("20.99"))
         test_db_session.add(book)
         test_db_session.commit()
         test_db_session.refresh(book)
@@ -119,6 +123,7 @@ class TestBooksAPI:
         assert data["title"] == "Test Book"
         assert data["author"] == "Test Author"
         assert Decimal(data["price"]) == Decimal("20.99")
+        assert data["image"] is None
 
     def test_get_book_by_id_not_found(self, client: TestClient):
         """Test getting a non-existent book"""

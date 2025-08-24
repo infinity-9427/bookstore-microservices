@@ -24,7 +24,7 @@ class Book(Base):
     # Fetch server defaults (e.g., now()) on insert/refresh automatically
     __mapper_args__ = {"eager_defaults": True}
 
-    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     title: Mapped[str] = mapped_column(TEXT, nullable=False)
     author: Mapped[str] = mapped_column(TEXT, nullable=False)
     description: Mapped[str] = mapped_column(TEXT, nullable=False)
@@ -47,8 +47,8 @@ class Book(Base):
     )
 
     __table_args__ = (
-        CheckConstraint("length(btrim(title)) > 0", name="check_title_not_empty"),
-        CheckConstraint("length(btrim(author)) > 0", name="check_author_not_empty"),
-        CheckConstraint("length(btrim(description)) > 0", name="check_description_not_empty"),
+        CheckConstraint("length(trim(title)) > 0", name="check_title_not_empty"),
+        CheckConstraint("length(trim(author)) > 0", name="check_author_not_empty"),
+        CheckConstraint("length(trim(description)) > 0", name="check_description_not_empty"),
         CheckConstraint("price >= 0", name="check_price_non_negative"),
     )

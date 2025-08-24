@@ -86,5 +86,4 @@ htmlcov/
 **/tmp/
 implementation-plan.md
 DEV.md
-BOOKS_API_EXAMPLES.md
-ORDER_API_EXAMPLES.md
+TESTING.md

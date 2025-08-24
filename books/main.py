@@ -3,8 +3,9 @@ import uuid
 import json
 import time
 from typing import List, Optional
+from decimal import Decimal
 
-from fastapi import FastAPI, HTTPException, Depends, Request, UploadFile, File, Form, Query, Response
+from fastapi import FastAPI, HTTPException, Depends, Request, UploadFile, File, Form, Query, Response, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
@@ -149,7 +150,33 @@ async def add_request_id(request: Request, call_next):
 
 
 # -------- CREATE (accepts JSON or multipart form-data) --------
-@app.post("/v1/books", response_model=BookResponse, status_code=201)
+@app.post(
+    "/v1/books",
+    response_model=BookResponse,
+    status_code=201,
+    openapi_extra={
+        "requestBody": {
+            "content": {
+                "application/json": {
+                    "schema": {"$ref": "#/components/schemas/BookRequest"}
+                },
+                "multipart/form-data": {
+                    "schema": {
+                        "type": "object",
+                        "required": ["title", "author", "description", "price"],
+                        "properties": {
+                            "title": {"type": "string", "description": "Book title"},
+                            "author": {"type": "string", "description": "Book author"},
+                            "description": {"type": "string", "description": "Book description"},
+                            "price": {"type": "number", "description": "Book price (two decimals)"},
+                            "image": {"type": "string", "format": "binary", "description": "Optional book cover image"}
+                        }
+                    }
+                }
+            }
+        }
+    }
+)
 async def create_book(
     request: Request,
     # Optional form-data fields (ignored on JSON requests)
@@ -184,7 +211,7 @@ async def create_book(
             # Ensure required form fields exist
             missing = [k for k, v in {"title": title, "author": author, "description": description, "price": price}.items() if v in (None, "")]
             if missing:
-                raise HTTPException(status_code=422, detail=f"Missing form fields: {', '.join(missing)}")
+                raise HTTPException(status_code=422, detail=f"Missing required fields: {', '.join(missing)}")
 
             from decimal import Decimal
             book_data = BookRequest(

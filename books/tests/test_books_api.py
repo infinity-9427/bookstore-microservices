@@ -204,6 +204,57 @@ class TestBooksAPI:
         assert data["title"] == "The Great Gatsby"
         assert data["author"] == "F. Scott Fitzgerald"
 
+    def test_create_book_json_missing_title(self, client: TestClient):
+        """Test JSON request missing title returns 422"""
+        json_data = {
+            "author": "Valid Author",
+            "description": "Valid description", 
+            "price": "19.99"
+            # Missing title
+        }
+        response = client.post("/v1/books", json=json_data)
+        assert response.status_code == 422
+
+    def test_create_book_multipart_missing_title(self, client: TestClient):
+        """Test multipart request missing title returns 422"""
+        # Create multipart request by including an actual file entry
+        from io import BytesIO
+        response = client.post(
+            "/v1/books",
+            data={
+                "author": "Valid Author",
+                "description": "Valid description", 
+                "price": "19.99"
+                # Missing title
+            },
+            files={"dummy": ("", BytesIO(b""), "text/plain")}  # Dummy file to trigger multipart
+        )
+        assert response.status_code == 422
+
+    def test_openapi_multipart_schema_required_fields(self, client: TestClient):
+        """Test that OpenAPI schema shows correct required fields for multipart"""
+        response = client.get("/openapi.json")
+        assert response.status_code == 200
+        
+        openapi = response.json()
+        
+        # Check that the multipart schema has the correct required fields
+        create_book_path = openapi["paths"]["/v1/books"]["post"]
+        multipart_schema = create_book_path["requestBody"]["content"]["multipart/form-data"]["schema"]
+        
+        assert "required" in multipart_schema
+        assert set(multipart_schema["required"]) == {"title", "author", "description", "price"}
+        
+        # Verify that required fields are not nullable in properties
+        properties = multipart_schema["properties"]
+        for field in ["title", "author", "description", "price"]:
+            assert field in properties
+            # Should not have nullable: true
+            assert properties[field].get("nullable") != True
+        
+        # Image should be optional (not in required list)
+        assert "image" not in multipart_schema["required"]
+
 
 @pytest.mark.asyncio
 class TestBooksAPIAsync:

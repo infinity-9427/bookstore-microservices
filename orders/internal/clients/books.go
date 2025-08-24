@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yourname/bookstore-microservices/orders/internal/models"
+	"github.com/infinity-9427/bookstore-microservices/orders/internal/models"
 )
 
 // Metrics interface for Books client

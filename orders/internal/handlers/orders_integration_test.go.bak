@@ -15,10 +15,10 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/yourname/bookstore-microservices/orders/internal/clients"
-	"github.com/yourname/bookstore-microservices/orders/internal/models"
-	"github.com/yourname/bookstore-microservices/orders/internal/repository"
-	"github.com/yourname/bookstore-microservices/orders/internal/service"
+	"github.com/infinity-9427/bookstore-microservices/orders/internal/clients"
+	"github.com/infinity-9427/bookstore-microservices/orders/internal/models"
+	"github.com/infinity-9427/bookstore-microservices/orders/internal/repository"
+	"github.com/infinity-9427/bookstore-microservices/orders/internal/service"
 )
 
 // MockBooksClient for integration tests

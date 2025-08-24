@@ -8,13 +8,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gin-gonic/gin"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/mock"
 	"log/slog"
 	"os"
 
-	"github.com/yourname/bookstore-microservices/orders/internal/models"
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
+
+	"github.com/infinity-9427/bookstore-microservices/orders/internal/models"
 )
 
 // Mock service for testing
@@ -56,7 +57,7 @@ func (m *MockOrdersService) ListOrdersPaginated(ctx context.Context, pagination 
 
 func TestListOrders_Pagination_Success(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	
+
 	mockService := new(MockOrdersService)
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	handler := NewOrdersHandler(mockService, logger)
@@ -88,11 +89,11 @@ func TestListOrders_Pagination_Success(t *testing.T) {
 
 	// Verify response
 	assert.Equal(t, http.StatusOK, rec.Code)
-	
+
 	var result models.PaginatedResponse[*models.Order]
 	err := json.Unmarshal(rec.Body.Bytes(), &result)
 	assert.NoError(t, err)
-	
+
 	assert.Equal(t, 2, len(result.Data))
 	assert.Equal(t, 150, result.Total)
 	assert.Equal(t, 50, result.Limit)
@@ -109,7 +110,7 @@ func TestListOrders_Pagination_Success(t *testing.T) {
 
 func TestListOrders_Pagination_InvalidLimit(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	
+
 	mockService := new(MockOrdersService)
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	handler := NewOrdersHandler(mockService, logger)
@@ -125,18 +126,18 @@ func TestListOrders_Pagination_InvalidLimit(t *testing.T) {
 
 	// Verify response
 	assert.Equal(t, http.StatusUnprocessableEntity, rec.Code)
-	
+
 	var result models.ErrorResponse
 	err := json.Unmarshal(rec.Body.Bytes(), &result)
 	assert.NoError(t, err)
-	
+
 	assert.Equal(t, "VALIDATION_ERROR", result.Error)
 	assert.Contains(t, result.Message, "Invalid limit parameter")
 }
 
 func TestListOrders_Pagination_InvalidOffset(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	
+
 	mockService := new(MockOrdersService)
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	handler := NewOrdersHandler(mockService, logger)
@@ -152,18 +153,18 @@ func TestListOrders_Pagination_InvalidOffset(t *testing.T) {
 
 	// Verify response
 	assert.Equal(t, http.StatusUnprocessableEntity, rec.Code)
-	
+
 	var result models.ErrorResponse
 	err := json.Unmarshal(rec.Body.Bytes(), &result)
 	assert.NoError(t, err)
-	
+
 	assert.Equal(t, "VALIDATION_ERROR", result.Error)
 	assert.Contains(t, result.Message, "Invalid offset parameter")
 }
 
 func TestListOrders_Pagination_LimitCapping(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	
+
 	mockService := new(MockOrdersService)
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	handler := NewOrdersHandler(mockService, logger)
@@ -195,11 +196,11 @@ func TestListOrders_Pagination_LimitCapping(t *testing.T) {
 
 	// Verify response
 	assert.Equal(t, http.StatusOK, rec.Code)
-	
+
 	var result models.PaginatedResponse[*models.Order]
 	err := json.Unmarshal(rec.Body.Bytes(), &result)
 	assert.NoError(t, err)
-	
+
 	// Limit should be capped to 200
 	assert.Equal(t, 200, result.Limit)
 
@@ -208,7 +209,7 @@ func TestListOrders_Pagination_LimitCapping(t *testing.T) {
 
 func TestListOrders_Pagination_EmptyResults(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	
+
 	mockService := new(MockOrdersService)
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	handler := NewOrdersHandler(mockService, logger)
@@ -216,7 +217,7 @@ func TestListOrders_Pagination_EmptyResults(t *testing.T) {
 	paginationReq := &models.PaginationRequest{Limit: 50, Offset: 1000}
 	response := &models.PaginatedResponse[*models.Order]{
 		Data:   []*models.Order{}, // Empty but not nil
-		Total:  10, // Total is still meaningful
+		Total:  10,                // Total is still meaningful
 		Limit:  50,
 		Offset: 1000,
 	}
@@ -234,11 +235,11 @@ func TestListOrders_Pagination_EmptyResults(t *testing.T) {
 
 	// Verify response
 	assert.Equal(t, http.StatusOK, rec.Code)
-	
+
 	var result models.PaginatedResponse[*models.Order]
 	err := json.Unmarshal(rec.Body.Bytes(), &result)
 	assert.NoError(t, err)
-	
+
 	assert.Equal(t, 0, len(result.Data)) // Empty array
 	assert.NotNil(t, result.Data)        // But not nil
 	assert.Equal(t, 10, result.Total)    // Total is still correct
@@ -253,7 +254,7 @@ func TestListOrders_Pagination_EmptyResults(t *testing.T) {
 
 func TestCreateOrder_LocationHeader(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	
+
 	mockService := new(MockOrdersService)
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	handler := NewOrdersHandler(mockService, logger)
@@ -266,7 +267,6 @@ func TestCreateOrder_LocationHeader(t *testing.T) {
 			{ID: 1, BookID: 1, Quantity: 1, UnitPrice: "19.99", TotalPrice: "19.99"},
 		},
 	}
-
 
 	mockService.On("CreateOrder", mock.Anything, mock.AnythingOfType("*models.CreateOrderRequest"), "").Return(order, nil)
 
@@ -283,7 +283,7 @@ func TestCreateOrder_LocationHeader(t *testing.T) {
 
 	// Verify response
 	assert.Equal(t, http.StatusCreated, rec.Code)
-	
+
 	// Verify Location header
 	location := rec.Header().Get("Location")
 	assert.Equal(t, "/v1/orders/123", location)
@@ -291,7 +291,7 @@ func TestCreateOrder_LocationHeader(t *testing.T) {
 	var result models.Order
 	err := json.Unmarshal(rec.Body.Bytes(), &result)
 	assert.NoError(t, err)
-	
+
 	assert.Equal(t, int64(123), result.ID)
 	assert.Equal(t, "19.99", result.TotalPrice) // 2dp string
 
@@ -300,7 +300,7 @@ func TestCreateOrder_LocationHeader(t *testing.T) {
 
 func TestListOrders_Pagination_LinkHeaders(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	
+
 	mockService := new(MockOrdersService)
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	handler := NewOrdersHandler(mockService, logger)
@@ -316,7 +316,7 @@ func TestListOrders_Pagination_LinkHeaders(t *testing.T) {
 		Data:   orders,
 		Total:  10, // Total records
 		Limit:  2,
-		Offset: 2,  // Middle page
+		Offset: 2, // Middle page
 	}
 
 	mockService.On("ListOrdersPaginated", mock.Anything, paginationReq).Return(response, nil)

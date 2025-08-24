@@ -5,14 +5,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/mock"
 	"log/slog"
 	"os"
 
-	"github.com/yourname/bookstore-microservices/orders/internal/config"
-	"github.com/yourname/bookstore-microservices/orders/internal/models"
-	"github.com/yourname/bookstore-microservices/orders/internal/repository"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
+
+	"github.com/infinity-9427/bookstore-microservices/orders/internal/config"
+	"github.com/infinity-9427/bookstore-microservices/orders/internal/models"
+	"github.com/infinity-9427/bookstore-microservices/orders/internal/repository"
 )
 
 // Mock implementations

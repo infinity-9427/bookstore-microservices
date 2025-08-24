@@ -5,28 +5,24 @@ A modern microservices-based bookstore system built with FastAPI (Python) and Go
 ## 🏗️ Architecture Overview
 
 ```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Books API     │    │   Orders API    │    │  BullMQ Workers │
-│   (FastAPI)     │    │     (Go)        │    │   (Node.js)     │
-│   Port: 8001    │    │   Port: 8082    │    │                 │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-         │                       │                       │
-         │                       │                       │
-         ▼                       ▼                       ▼
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   books_db      │    │   orders_db     │    │     Redis       │
-│ (PostgreSQL)    │    │ (PostgreSQL)    │    │   (Message      │
-│                 │    │                 │    │    Queue)       │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
+┌─────────────────┐    ┌─────────────────┐    
+│   Books API     │    │   Orders API    │    
+│   (FastAPI)     │    │     (Go)        │    
+└─────────────────┘    └─────────────────┘    
+         │                       │                       
+         ▼                       ▼                       
+┌─────────────────┐    ┌─────────────────┐    
+│   books_db      │    │   orders_db     │    
+│ (PostgreSQL)    │    │ (PostgreSQL)    │    
+│                 │    │                 │    
+└─────────────────┘    └─────────────────┘    
 ```
 
 ### Technology Stack
 
 - **Books Service**: FastAPI (Python) with SQLAlchemy ORM
 - **Orders Service**: Go with Gin framework and PGX driver
-- **Workers**: Node.js with TypeScript and BullMQ
 - **Database**: PostgreSQL (separate databases for each service)
-- **Message Queue**: Redis for job processing
 - **Monitoring**: Prometheus + Grafana (optional profile)
 
 ## 📖 API Documentation
@@ -302,7 +298,7 @@ Returns:
 { "data": [], "total": 150, "limit": 20, "offset": 1000 }
 ```
 
-##### cURL Quick Reference (Orders)
+##### CURL Quick Reference (Orders)
 ```bash
 # Create single-book order
 curl -X POST http://localhost:8082/v1/orders -H 'Content-Type: application/json' -d '{"items":[{"book_id":1,"quantity":1}]}'
@@ -325,7 +321,7 @@ curl http://localhost:8082/v1/orders/1
 ### Quick Start
 ```bash
 # Clone the repository
-git clone <repository-url>
+git clone https://github.com/infinity-9427/bookstore-microservices
 cd bookstore-microservices
 
 # Start all services
@@ -429,16 +425,100 @@ When started with the monitoring profile:
 
 ## 🧪 Testing
 
-### Books Service (FastAPI)
+### Overview
+Each service has its own test suite. Below are common commands (from repo root unless noted). Use `-q` for quiet, `-v` for verbose.
+
+### Books Service (FastAPI / pytest)
 ```bash
-cd books
-pytest -v
+# Run full suite (quiet)
+cd books && pytest -q
+# Run full suite (verbose + durations)
+cd books && pytest -vv --durations=10
+# Run only API tests
+cd books && pytest tests/test_books_api.py -q
+# Run a single test class
+cd books && pytest tests/test_books_api.py::TestBooksAPI -q
+# Run a single test function (requested example)
+cd books && pytest tests/test_books_api.py::TestBooksAPI::test_create_book_success -q
+# Run model tests only
+cd books && pytest tests/test_models.py -q
+# Stop on first failure
+cd books && pytest -q -x
+# Re-run only previously failed tests, then all if they pass
+cd books && pytest -q --failed-first
+# Show print/log output
+cd books && pytest -q -s
+# Run with coverage (if coverage installed)
+cd books && pytest -q --maxfail=1 --cov=. --cov-report=term-missing
 ```
 
-### Orders Service (Go)  
+Common pytest filtering tips:
+- Keyword match: `pytest -k pagination -q` (runs tests with 'pagination' in name or path)
+- Marker (if added later): `pytest -m slow -q`
+
+### Orders Service (Go)
 ```bash
-cd orders
-go test ./...
+# Run all packages (no cache, count=1 ensures fresh run)
+cd orders && go test ./... -count=1
+# With race detector (recommended) and verbose
+cd orders && go test -race -count=1 -v ./...
+# Run only handler tests
+cd orders && go test ./internal/handlers -count=1
+# Run service layer tests
+cd orders && go test ./internal/service -count=1
+# Run a single test file
+cd orders && go test -run TestCreateOrder ./internal/handlers -count=1
+# Run benchmarks (if any defined with Benchmark*)
+cd orders && go test -bench=. -benchmem ./...
+```
+
+Go test flags quick reference:
+- `-run <regex>`: select tests
+- `-race`: race detector
+- `-count=1`: disable Result caching
+- `-bench` / `-benchmem`: benchmarks
+- `-cover` / `-coverprofile=cover.out`: coverage
+
+Coverage example:
+```bash
+cd orders && go test ./... -coverprofile=cover.out && go tool cover -func=cover.out
+```
+
+### Workers Service (Node / pnpm / Jest or similar)
+```bash
+cd workers
+pnpm install
+pnpm test        # Standard test run (if defined)
+pnpm test -- --runInBand   # Serial execution
+pnpm test -- -t queue      # Pattern match (e.g., tests containing 'queue')
+```
+
+If no explicit test script exists, you can add one to `workers/package.json`:
+```jsonc
+"scripts": {
+  "test": "jest --passWithNoTests"
+}
+```
+
+### Mixed / Cross-Service Testing
+Integration tests that span services (e.g., orders validating against books) should be placed in each service's integration folder (`orders/integration`). To run only integration tests:
+```bash
+cd orders && go test ./integration -count=1 -v
+```
+
+### Fast Iteration Tips
+- Use `pytest -k <expr>` or `go test -run <regex>` to narrow scope.
+- Combine watch tools (e.g., `entr` or an editor test runner) for rapid feedback.
+- Keep DB-independent unit tests fast by mocking external calls (e.g., Books client inside Orders service).
+
+### Health / Sanity Checks
+```bash
+# Books: quick smoke (creates then fetches a book)
+curl -s -X POST localhost:8001/v1/books -H 'Content-Type: application/json' \
+  -d '{"title":"Smoke","author":"Tester","description":"Smoke","price":"1.00"}' | jq '.id'
+
+# Orders: list after any seed
+curl -s localhost:8082/v1/orders | jq '.[0]' 2>/dev/null || echo 'No orders yet'
 ```
 
 ### Manual Testing Script
@@ -471,44 +551,45 @@ curl -s http://localhost:8082/v1/orders/$ORDER_ID | jq '.'
 2. **Single Tenant**: No multi-tenancy support
 3. **No Inventory Management**: No stock tracking or reservation
 4. **Price Changes**: Orders capture price at creation time, subsequent book price changes don't affect existing orders
-5. **Soft Deletes**: Books are soft-deleted only (active=false)
+
 
 ### Known Limitations
 
-1. **Deleted Book Scenario**: 
-   - **Issue**: If a book is deleted (soft-deleted) after an order is created, the order still references the book_id
-   - **Current Behavior**: Order remains valid with captured price information
-   - **Implication**: Orders serve as historical records even for deleted books
-   - **Workaround**: Book information is snapshotted at order time
+1. **Book Lifecycle Without Metadata Snapshot**  
+  - **Issue**: Orders persist only monetary fields (unit/total price) and `book_id` references; they do **not** store a stable copy of book metadata (title / author / description / image) at order time.  
+  - **Impact**: If a book is later updated, soft‑deleted, or hard‑removed, resolving fresh metadata (`GET /v1/books/{id}`) can yield `404`/`410`, leaving historical order views with missing or stale titles/authors/covers. Prices in the order remain correct, but UX / analytics requiring historical product labeling may degrade.  
+  - **Example**: Order `#123` contains `book_id=10`. Weeks later the book is removed. `GET /v1/orders/123` still returns the line (monetary data intact), but `GET /v1/books/10` now returns `404`, so an enriched invoice UI cannot display the original title.  
+  - **Current Behavior**: Only price is effectively snapshotted (since unit_price / total_price are stored).  
+  - **Mitigations (Future)**: (a) Denormalize minimal immutable snapshot (title, author) into order items; (b) Introduce a versioned catalog service; (c) Soft‑delete with retained metadata instead of hard removal; (d) Background archival of full book JSON at order creation.
 
-2. **No Order Modifications**: 
-   - Orders cannot be updated or cancelled once created
-   - No inventory validation or reservation
+2. **No Order Modifications**  
+  - Orders cannot be edited or cancelled post‑creation.  
+  - No inventory reservation or validation cycle (risk of overselling if stock were introduced).  
+  - **Mitigations**: Add order status workflow (PENDING → CONFIRMED / CANCELLED) and stock service integration.
 
-3. **No Payment Processing**: 
-   - Orders are created but no payment integration exists
-   - No order status management (pending, paid, shipped, etc.)
+3. **No Payment Processing**  
+  - No gateway integration, status, or reconciliation; every order is implicitly "final".  
+  - **Mitigations**: Introduce payment intent + webhook confirmation, status transitions, idempotent payment records.
 
-4. **Cross-Service Data Consistency**:
-   - Book price changes don't retroactively affect existing orders (by design)
-   - No distributed transaction management between services
+4. **Cross-Service Consistency Constraints**  
+  - No distributed transactions / saga orchestration; price & availability checks are point‑in‑time only.  
+  - Book price changes do not retroactively adjust existing orders (intentional).  
+  - **Mitigations**: Implement outbox pattern + event bus for eventual consistency; apply compensating actions via saga coordinator.
 
-5. **Limited Error Handling**:
-   - If Books API is down, orders cannot be created
-   - No circuit breaker pattern implemented (simplified for demo)
+5. **Limited Resilience & Error Handling**  
+  - No circuit breaker / retry / bulkhead patterns; limited structured error taxonomy.  
+  - **Mitigations**: Add client‑side circuit breaker, in‑memory or Redis book cache, retry with jitter, standardized error schema.
 
-6. **Scalability Considerations**:
-   - Database connections not optimized for high concurrency
-   - No horizontal scaling strategy documented
+6. **Scalability Considerations**  
+  - DB connection pooling & tuning unoptimized for high concurrency; no horizontal scale runbook.  
+  - API instances are stateless but no autoscaling policy or load test thresholds documented.  
+  - **Mitigations**: Define P95 latency/error SLOs, add k6/Locust load tests, introduce connection pool sizing & metrics alerts, document horizontal scaling steps.
 
 ### Production Readiness Gaps
 
-To make this production-ready, consider adding:
+Considerations:
 - Authentication & authorization
-- Input validation & sanitization  
 - Rate limiting
-- Comprehensive error handling
-- Health checks with dependencies
 - Distributed tracing
 - Backup & disaster recovery
 - Security headers & HTTPS
@@ -519,14 +600,17 @@ To make this production-ready, consider adding:
 
 ### Books Service (.env file in books/)
 ```env
-DATABASE_URL=postgresql://postgres:postgres@db/books_db
+BOOKS_DB_DSN=postgresql://books_user:books_password@db:5432/books_db
 PORT=8001
-LOG_LEVEL=info
+CLOUDINARY_CLOUD_NAME=abc123
+CLOUDINARY_API_KEY=abc123
+CLOUDINARY_API_SECRET=abc123
+UPLOAD_PRESET=books_images
 ```
 
 ### Orders Service (.env file in orders/)
 ```env
-DATABASE_URL=postgresql://postgres:postgres@db/orders_db
+DATABASE_URL=postgresql://orders_user:orders_password@db:5432/orders_db
 BOOKS_SERVICE_URL=http://books:8001
 PORT=8082
 HTTP_TIMEOUT=10s

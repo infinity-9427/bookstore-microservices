@@ -8,8 +8,8 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/yourname/bookstore-microservices/orders/internal/models"
-	"github.com/yourname/bookstore-microservices/orders/internal/service"
+	"github.com/infinity-9427/bookstore-microservices/orders/internal/models"
+	"github.com/infinity-9427/bookstore-microservices/orders/internal/service"
 )
 
 type OrdersHandler struct {
@@ -87,10 +87,10 @@ func (h *OrdersHandler) ListOrders(c *gin.Context) {
 
 	// Set pagination headers
 	baseURL := "/v1/orders"
-	
+
 	// RFC5988 Link header
 	var links []string
-	if response.Offset + response.Limit < response.Total {
+	if response.Offset+response.Limit < response.Total {
 		nextOffset := response.Offset + response.Limit
 		links = append(links, fmt.Sprintf("<%s?limit=%d&offset=%d>; rel=\"next\"", baseURL, response.Limit, nextOffset))
 	}
@@ -101,11 +101,11 @@ func (h *OrdersHandler) ListOrders(c *gin.Context) {
 		}
 		links = append(links, fmt.Sprintf("<%s?limit=%d&offset=%d>; rel=\"prev\"", baseURL, response.Limit, prevOffset))
 	}
-	
+
 	if len(links) > 0 {
 		c.Header("Link", strings.Join(links, ", "))
 	}
-	
+
 	// X-Total-Count header for simple client use
 	c.Header("X-Total-Count", fmt.Sprintf("%d", response.Total))
 

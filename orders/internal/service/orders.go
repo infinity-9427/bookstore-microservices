@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/infinity-9427/bookstore-microservices/orders/internal/clients"
+	"github.com/infinity-9427/bookstore-microservices/orders/internal/config"
+	"github.com/infinity-9427/bookstore-microservices/orders/internal/models"
+	"github.com/infinity-9427/bookstore-microservices/orders/internal/repository"
 	"github.com/shopspring/decimal"
-	"github.com/yourname/bookstore-microservices/orders/internal/clients"
-	"github.com/yourname/bookstore-microservices/orders/internal/config"
-	"github.com/yourname/bookstore-microservices/orders/internal/models"
-	"github.com/yourname/bookstore-microservices/orders/internal/repository"
 )
 
 type OrdersService interface {

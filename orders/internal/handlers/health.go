@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/infinity-9427/bookstore-microservices/orders/internal/clients"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/yourname/bookstore-microservices/orders/internal/clients"
 )
 
 type HealthHandler struct {

@@ -13,12 +13,13 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/yourname/bookstore-microservices/orders/internal/clients"
-	"github.com/yourname/bookstore-microservices/orders/internal/config"
-	"github.com/yourname/bookstore-microservices/orders/internal/handlers"
-	"github.com/yourname/bookstore-microservices/orders/internal/logging"
-	"github.com/yourname/bookstore-microservices/orders/internal/repository"
-	"github.com/yourname/bookstore-microservices/orders/internal/service"
+	"github.com/infinity-9427/bookstore-microservices/orders/internal/clients"
+	"github.com/infinity-9427/bookstore-microservices/orders/internal/config"
+	"github.com/infinity-9427/bookstore-microservices/orders/internal/handlers"
+	"github.com/infinity-9427/bookstore-microservices/orders/internal/logging"
+	"github.com/infinity-9427/bookstore-microservices/orders/internal/metrics"
+	"github.com/infinity-9427/bookstore-microservices/orders/internal/repository"
+	"github.com/infinity-9427/bookstore-microservices/orders/internal/service"
 )
 
 func main() {
@@ -68,6 +69,7 @@ func main() {
 	// Router setup
 	r := gin.New()
 	r.Use(gin.Recovery())
+	r.Use(metrics.Middleware())
 	r.Use(func(c *gin.Context) {
 		// Simple request ID middleware
 		requestID := c.GetHeader("X-Request-ID")
@@ -89,6 +91,7 @@ func main() {
 	}
 
 	r.GET("/health", healthHandler.Health)
+	r.GET("/metrics", metrics.Handler())
 
 	// Server setup
 	srv := &http.Server{

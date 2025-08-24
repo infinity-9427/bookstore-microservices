@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/infinity-9427/bookstore-microservices/orders/internal/models"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/yourname/bookstore-microservices/orders/internal/models"
 )
 
 type OrdersRepository interface {

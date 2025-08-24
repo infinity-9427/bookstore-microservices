@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 
 from sqlalchemy.orm import Session
-from sqlalchemy import select, func
+from sqlalchemy import select, func, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from models import BookRequest, BookResponse, BookUpdateRequest, ImageData, BooksPage
@@ -157,8 +157,21 @@ async def add_request_id(request: Request, call_next):
     openapi_extra={
         "requestBody": {
             "content": {
+                # Inline schema instead of $ref because the handler does manual parsing and
+                # BookRequest isn't a direct function parameter (so FastAPI didn't add it to components).
+                # This avoids Swagger UI resolver errors.
                 "application/json": {
-                    "schema": {"$ref": "#/components/schemas/BookRequest"}
+                    "schema": {
+                        "type": "object",
+                        "required": ["title", "author", "description", "price"],
+                        "properties": {
+                            "title": {"type": "string", "description": "Book title"},
+                            "author": {"type": "string", "description": "Book author"},
+                            "description": {"type": "string", "description": "Book description"},
+                            "price": {"type": "number", "description": "Book price (two decimals)"},
+                            "image": {"type": "object", "nullable": True, "description": "(Ignored in JSON path) optional image data"}
+                        }
+                    }
                 },
                 "multipart/form-data": {
                     "schema": {
@@ -261,14 +274,15 @@ async def get_books(
 ):
     try:
         # Get total count with same filters
-        count_stmt = select(func.count()).select_from(Book).where(Book.active.is_(True))
+        count_stmt = select(func.count()).select_from(Book).where(Book.active == True)  # noqa: E712
         total = db.execute(count_stmt).scalar()
 
         # Get page data
+        # Deterministic ordering: prefer primary key DESC (monotonic) over created_at (can share same timestamp)
         stmt = (
             select(Book)
-            .where(Book.active.is_(True))
-            .order_by(Book.created_at.desc())
+            .where(Book.active == True)  # noqa: E712
+            .order_by(Book.id.desc())
             .limit(limit)
             .offset(offset)
         )
@@ -314,7 +328,7 @@ async def get_books(
 @app.get("/v1/books/{book_id}", response_model=BookResponse)
 async def get_book(book_id: int, db: Session = Depends(get_db_session)):
     try:
-        book = db.execute(select(Book).where(Book.id == book_id, Book.active.is_(True))).scalar_one_or_none()
+        book = db.execute(select(Book).where(Book.id == book_id, Book.active == True)).scalar_one_or_none()  # noqa: E712
         if not book:
             raise HTTPException(status_code=404, detail="Book not found")
 
@@ -342,7 +356,7 @@ async def update_book(
     db: Session = Depends(get_db_session),
 ):
     try:
-        book = db.execute(select(Book).where(Book.id == book_id, Book.active.is_(True))).scalar_one_or_none()
+        book = db.execute(select(Book).where(Book.id == book_id, Book.active == True)).scalar_one_or_none()  # noqa: E712
         if not book:
             raise HTTPException(status_code=404, detail="Book not found")
 
@@ -429,7 +443,7 @@ async def update_book(
 @app.delete("/v1/books/{book_id}")
 async def delete_book(book_id: int, db: Session = Depends(get_db_session)):
     try:
-        book = db.execute(select(Book).where(Book.id == book_id, Book.active.is_(True))).scalar_one_or_none()
+        book = db.execute(select(Book).where(Book.id == book_id, Book.active == True)).scalar_one_or_none()  # noqa: E712
         if not book:
             raise HTTPException(status_code=404, detail="Book not found")
 
@@ -452,7 +466,7 @@ async def delete_book(book_id: int, db: Session = Depends(get_db_session)):
 async def upload_book_image(book_id: int, image: UploadFile = File(...), db: Session = Depends(get_db_session)):
     """Upload/replace image for a specific book (still supported)."""
     try:
-        book = db.execute(select(Book).where(Book.id == book_id, Book.active.is_(True))).scalar_one_or_none()
+        book = db.execute(select(Book).where(Book.id == book_id, Book.active == True)).scalar_one_or_none()  # noqa: E712
         if not book:
             raise HTTPException(status_code=404, detail="Book not found")
 
@@ -496,12 +510,10 @@ async def delete_book_image(book_id: int, db: Session = Depends(get_db_session))
 
 
 @app.get("/health")
-async def health_check():
+async def health_check(db: Session = Depends(get_db_session)):
+    """Health check that reuses the main DB session dependency (works with test overrides)."""
     try:
-        from sqlalchemy import create_engine, text
-        engine = create_engine(Config.BOOKS_DB_DSN, pool_pre_ping=True)
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
+        db.execute(text("SELECT 1"))
         return {
             "status": "healthy",
             "service": "books",
